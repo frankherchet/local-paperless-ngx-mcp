@@ -21,6 +21,7 @@ ORGANIZATION_OBJECT_TYPES = {
     "storage_paths",
     "custom_fields",
     "saved_views",
+    "workflows",
 }
 
 MISSING_METADATA_FILTERS: dict[str, tuple[str, QueryValue]] = {
@@ -166,6 +167,7 @@ class PaperlessClient:
                     "allowed_types": sorted(DELETABLE_ORGANIZATION_OBJECT_TYPES),
                     "allowed_operations": ["delete"],
                     "delete_reference_check_required": True,
+                    "workflow_reference_check_required": True,
                 },
             },
         }
@@ -212,6 +214,7 @@ class PaperlessClient:
         document_id: int,
         *,
         include_content: bool,
+        include_file_metadata: bool,
         max_content_chars: int,
     ) -> JsonObject:
         document = await self.request("GET", f"api/documents/{document_id}/")
@@ -222,6 +225,11 @@ class PaperlessClient:
             document["content"] = content[:max_content_chars]
             document["content_truncated"] = True
             document["content_total_chars"] = len(content)
+        if include_file_metadata:
+            document["file_metadata"] = await self.request(
+                "GET",
+                f"api/documents/{document_id}/metadata/",
+            )
         return document
 
     async def list_objects(
@@ -235,7 +243,7 @@ class PaperlessClient:
         if object_type not in ORGANIZATION_OBJECT_TYPES:
             raise ValueError(f"Unsupported object type: {object_type}")
         params: dict[str, QueryValue] = {"page": page, "page_size": page_size}
-        if object_type != "saved_views":
+        if object_type not in {"saved_views", "workflows"}:
             params["ordering"] = ordering
         payload = await self.request(
             "GET",
@@ -366,6 +374,7 @@ class PaperlessClient:
         """Check document and tag-hierarchy references before metadata deletion."""
         self._validate_deletable_object_type(object_type)
         items = await self._fetch_all_objects(object_type)
+        workflows = await self._fetch_all_objects("workflows")
         selected_ids = set(item_ids) if item_ids is not None else None
         items_by_id = {
             item["id"]: item
@@ -399,6 +408,13 @@ class PaperlessClient:
                 reasons.append("referenced_by_documents")
             if children:
                 reasons.append("parent_of_tags")
+            workflow_references = self._find_workflow_references(
+                workflows,
+                object_type,
+                item_id,
+            )
+            if workflow_references:
+                reasons.append("referenced_by_workflows")
 
             assessment: JsonObject = {
                 "id": item_id,
@@ -407,6 +423,7 @@ class PaperlessClient:
                 "child_tag_ids": children,
                 "deletable": not reasons,
                 "blocking_reasons": reasons,
+                "workflow_references": workflow_references,
             }
             if object_type == "storage_paths":
                 assessment["path"] = item.get("path")
@@ -423,7 +440,7 @@ class PaperlessClient:
             "blocked_count": len(blocked),
             "scanned_count": len(items),
             "referenced_items_omitted": referenced_items_omitted,
-            "reference_checks": ["document_count"]
+            "reference_checks": ["document_count", "workflow_triggers", "workflow_actions"]
             + (["child_tag_relationships"] if object_type == "tags" else []),
             "requires_explicit_user_approval": True,
         }
@@ -551,6 +568,29 @@ class PaperlessClient:
         if not changes:
             raise ValueError("At least one change must be provided")
         return await self.request("PATCH", f"api/documents/{document_id}/", json=changes)
+
+    async def document_notes(
+        self,
+        document_id: int,
+        operation: str,
+        *,
+        note: str | None,
+        page: int,
+        page_size: int,
+    ) -> JsonObject:
+        path = f"api/documents/{document_id}/notes/"
+        if operation == "list":
+            return await self.request(
+                "GET",
+                path,
+                params={"page": page, "page_size": page_size},
+            )
+        if operation == "create":
+            self._ensure_write_enabled()
+            if note is None or not note.strip():
+                raise ValueError("note is required when operation='create'")
+            return await self.request("POST", path, json={"note": note.strip()})
+        raise ValueError(f"Unsupported document notes operation: {operation}")
 
     async def _bulk_edit_documents(
         self,
@@ -683,6 +723,76 @@ class PaperlessClient:
                 enrich_organization_item(item) for item in results if isinstance(item, dict)
             ]
         return payload
+
+    @staticmethod
+    def _find_workflow_references(
+        workflows: list[JsonObject],
+        object_type: str,
+        item_id: int,
+    ) -> list[JsonObject]:
+        fields: dict[str, tuple[tuple[str, bool], ...]] = {
+            "tags": (
+                ("filter_has_tags", True),
+                ("filter_has_all_tags", True),
+                ("filter_has_not_tags", True),
+                ("assign_tags", True),
+                ("remove_tags", True),
+            ),
+            "correspondents": (
+                ("filter_has_correspondent", False),
+                ("filter_has_not_correspondents", True),
+                ("assign_correspondent", False),
+                ("remove_correspondents", True),
+            ),
+            "document_types": (
+                ("filter_has_document_type", False),
+                ("filter_has_not_document_types", True),
+                ("assign_document_type", False),
+                ("remove_document_types", True),
+            ),
+            "storage_paths": (
+                ("filter_has_storage_path", False),
+                ("filter_has_not_storage_paths", True),
+                ("assign_storage_path", False),
+                ("remove_storage_paths", True),
+            ),
+        }
+        references: list[JsonObject] = []
+        configured_fields = fields[object_type]
+        trigger_fields = {
+            field for field, _many in configured_fields if field.startswith("filter_")
+        }
+
+        for workflow in workflows:
+            for section_name in ("triggers", "actions"):
+                entries = workflow.get(section_name)
+                if not isinstance(entries, list):
+                    continue
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_id = entry.get("id")
+                    for field, many in configured_fields:
+                        if (field in trigger_fields) != (section_name == "triggers"):
+                            continue
+                        value = entry.get(field)
+                        is_reference = (
+                            isinstance(value, list) and item_id in value
+                            if many
+                            else value == item_id
+                        )
+                        if is_reference:
+                            references.append(
+                                {
+                                    "workflow_id": workflow.get("id"),
+                                    "workflow_name": workflow.get("name"),
+                                    "workflow_enabled": workflow.get("enabled"),
+                                    "section": section_name,
+                                    "entry_id": entry_id,
+                                    "field": field,
+                                }
+                            )
+        return references
 
     @staticmethod
     def _document_summary(document: JsonObject) -> JsonObject:

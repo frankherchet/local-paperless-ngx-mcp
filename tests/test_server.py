@@ -1,6 +1,7 @@
+import pytest
 from fastmcp import Client
 
-from paperless_ngx_mcp.server import create_server
+from paperless_ngx_mcp.server import _validate_document_changes, create_server
 
 
 async def test_server_exposes_expected_tools() -> None:
@@ -24,6 +25,7 @@ async def test_server_exposes_expected_tools() -> None:
         "list_trashed_documents",
         "restore_documents_from_trash",
         "update_document",
+        "document_notes",
     }
     assert all(
         "delete_document" not in tool.name and "empty_trash" not in tool.name for tool in tools
@@ -37,6 +39,19 @@ async def test_server_exposes_expected_tools() -> None:
     assert update_tool.annotations is not None
     assert update_tool.annotations.readOnlyHint is False
     assert update_tool.annotations.destructiveHint is False
+    assert set(update_tool.inputSchema["properties"]) == {"document_id", "changes"}
+
+    get_document_tool = next(tool for tool in tools if tool.name == "get_document")
+    assert "include_file_metadata" in get_document_tool.inputSchema["properties"]
+
+    notes_tool = next(tool for tool in tools if tool.name == "document_notes")
+    assert set(notes_tool.inputSchema["properties"]) == {
+        "document_id",
+        "operation",
+        "note",
+        "page",
+        "page_size",
+    }
 
     trash_tool = next(tool for tool in tools if tool.name == "move_documents_to_trash")
     assert trash_tool.annotations is not None
@@ -46,3 +61,22 @@ async def test_server_exposes_expected_tools() -> None:
     assert object_bulk_tool.annotations is not None
     assert object_bulk_tool.annotations.readOnlyHint is False
     assert object_bulk_tool.annotations.destructiveHint is True
+
+
+def test_document_patch_validation_supports_explicit_null_and_full_tag_list() -> None:
+    _validate_document_changes(
+        {
+            "correspondent": None,
+            "document_type": None,
+            "storage_path": None,
+            "archive_serial_number": None,
+            "tags": [],
+        }
+    )
+
+    with pytest.raises(ValueError, match="Unsupported document fields"):
+        _validate_document_changes({"content": "must remain read-only"})
+    with pytest.raises(ValueError, match="title must be"):
+        _validate_document_changes({"title": None})
+    with pytest.raises(ValueError, match="tags must be"):
+        _validate_document_changes({"tags": None})

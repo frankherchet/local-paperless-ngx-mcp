@@ -94,8 +94,8 @@ Umgebungsvariablen an den Prozess übergeben.
 | --- | --- | --- |
 | `paperless_status` | Verbindung, Versionen und Dokumentanzahl prüfen | Nein |
 | `search_documents` | Dokumente in vier Suchmodi finden | Nein |
-| `get_document` | Metadaten und begrenzten OCR-Text laden | Nein |
-| `list_metadata` | Organisationsobjekte mit Details und Matching-Modus listen | Nein |
+| `get_document` | Dokument, OCR-Text und optional Datei-Prüfsummen laden | Nein |
+| `list_metadata` | Organisationsobjekte und Workflows listen | Nein |
 | `get_organization_overview` | Nutzung, Dubletten und Zuordnungslücken zusammenfassen | Nein |
 | `find_documents_missing_metadata` | Dokumente ohne ausgewählte Metadaten finden | Nein |
 | `find_documents_by_metadata` | Dokumente zu einem Organisationsobjekt finden | Nein |
@@ -107,7 +107,8 @@ Umgebungsvariablen an den Prozess übergeben.
 | `list_trashed_documents` | Inhalt des Papierkorbs auflisten | Nein |
 | `move_documents_to_trash` | Dokumente in den wiederherstellbaren Papierkorb verschieben | Ja |
 | `restore_documents_from_trash` | Dokumente aus dem Papierkorb wiederherstellen | Ja |
-| `update_document` | Titel, Datum, Zuordnungen, Tags oder ASN ändern | Optional |
+| `update_document` | Dokumentfelder per REST-PATCH ändern oder leeren | Optional |
+| `document_notes` | Dokumentnotizen auflisten oder anlegen | Optional |
 
 `update_document` funktioniert erst nach:
 
@@ -132,8 +133,9 @@ Tool bildet `POST /api/bulk_edit_objects/` mit den API-Feldern `objects`,
 `object_type` und `operation` ab. Sicherheitsvorkehrungen werden zentral
 angewendet:
 
-1. Der Standard `dry_run=true` prüft `document_count`; bei Tags werden zusätzlich
-   untergeordnete Tags als Referenzen berücksichtigt.
+1. Der Standard `dry_run=true` prüft `document_count`, Workflow-Trigger und
+   Workflow-Aktionen; bei Tags werden zusätzlich untergeordnete Tags als
+   Referenzen berücksichtigt.
 2. Das Ergebnis wird dem Benutzer gezeigt und die ausdrückliche Freigabe
    eingeholt.
 3. Derselbe Aufruf mit `dry_run=false` wiederholt die Referenzprüfung unmittelbar
@@ -143,6 +145,18 @@ angewendet:
 Das Bulk-Tool ist im MCP als destruktiv markiert. Für `operation=delete` sind nur
 die vier genannten Organisationstypen freigegeben. Dokumente, Custom Fields,
 Saved Views und andere Objekte sind darüber nicht löschbar.
+
+`list_metadata(object_type="workflows")` liefert die vollständigen Trigger und
+Aktionen für eine manuelle Prüfung. Die Löschsperre führt dieselbe
+Workflow-Referenzprüfung serverseitig erneut aus. Wenn Workflows nicht gelesen
+werden können, schlägt die Prüfung fehl und es wird nichts gelöscht.
+
+Für eine sichere Dublettenprüfung kann `get_document` mit
+`include_file_metadata=true` aufgerufen werden. Die Antwort enthält dann unter
+`file_metadata` insbesondere `original_checksum` und `archive_checksum`.
+`document_notes` bildet die GET- und POST-Operationen von
+`/api/documents/{id}/notes/` ab; das Löschen von Notizen wird wegen der globalen
+HTTP-`DELETE`-Sperre nicht angeboten.
 
 ### Organisationsprüfung mit AI
 

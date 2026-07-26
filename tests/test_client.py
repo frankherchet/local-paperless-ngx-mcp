@@ -84,6 +84,7 @@ async def test_get_document_truncates_ocr_content() -> None:
         result = await client.get_document(
             5,
             include_content=True,
+            include_file_metadata=False,
             max_content_chars=1_000,
         )
 
@@ -107,7 +108,42 @@ async def test_api_errors_have_a_useful_message() -> None:
 
     async with PaperlessClient(make_settings(), transport=transport) as client:
         with pytest.raises(PaperlessApiError, match="HTTP 401: Invalid token"):
-            await client.get_document(1, include_content=False, max_content_chars=1_000)
+            await client.get_document(
+                1,
+                include_content=False,
+                include_file_metadata=False,
+                max_content_chars=1_000,
+            )
+
+
+@pytest.mark.asyncio
+async def test_get_document_can_include_file_checksums() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/metadata/"):
+            return httpx.Response(
+                200,
+                json={
+                    "original_checksum": "original-sha256",
+                    "archive_checksum": "archive-sha256",
+                },
+            )
+        return httpx.Response(200, json={"id": 5, "title": "Document", "content": "OCR"})
+
+    async with PaperlessClient(
+        make_settings(),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.get_document(
+            5,
+            include_content=False,
+            include_file_metadata=True,
+            max_content_chars=1_000,
+        )
+
+    assert result["file_metadata"] == {
+        "original_checksum": "original-sha256",
+        "archive_checksum": "archive-sha256",
+    }
 
 
 @pytest.mark.asyncio
@@ -192,6 +228,15 @@ async def test_organization_overview_fetches_all_pages_and_assignment_counts() -
             }
         ],
         "storage_paths": [{"id": 5, "name": "Archive", "document_count": 20}],
+        "workflows": [
+            {
+                "id": 8,
+                "name": "Inbox workflow",
+                "enabled": True,
+                "triggers": [],
+                "actions": [],
+            }
+        ],
     }
     missing_counts = {
         "correspondent__isnull": 3,
@@ -372,16 +417,34 @@ async def test_create_and_update_organization_items_use_no_delete_method() -> No
 async def test_bulk_edit_objects_dry_run_checks_documents_and_child_tags() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
+        if request.url.path == "/paperless/api/workflows/":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [
+                        {
+                            "id": 20,
+                            "name": "Assign tag",
+                            "enabled": True,
+                            "triggers": [],
+                            "actions": [{"id": 21, "assign_tags": [3]}],
+                        }
+                    ],
+                },
+            )
         assert request.url.path == "/paperless/api/tags/"
         return httpx.Response(
             200,
             json={
-                "count": 3,
+                "count": 4,
                 "next": None,
                 "results": [
                     {"id": 1, "name": "Parent", "document_count": 0, "parent": None},
                     {"id": 2, "name": "Used", "document_count": 4, "parent": None},
                     {"id": 3, "name": "Leaf", "document_count": 0, "parent": 1},
+                    {"id": 4, "name": "Unused", "document_count": 0, "parent": None},
                 ],
             },
         )
@@ -392,16 +455,19 @@ async def test_bulk_edit_objects_dry_run_checks_documents_and_child_tags() -> No
     ) as client:
         result = await client.bulk_edit_objects(
             "tags",
-            [1, 2, 3, 99],
+            [1, 2, 3, 4, 99],
             "delete",
             dry_run=True,
         )
 
     preview = result["preflight"]
-    assert [item["id"] for item in preview["candidates"]] == [3]
-    assert [item["id"] for item in preview["blocked"]] == [1, 2]
+    assert [item["id"] for item in preview["candidates"]] == [4]
+    assert [item["id"] for item in preview["blocked"]] == [1, 2, 3]
     assert preview["blocked"][0]["blocking_reasons"] == ["parent_of_tags"]
     assert preview["blocked"][1]["blocking_reasons"] == ["referenced_by_documents"]
+    assert preview["blocked"][2]["blocking_reasons"] == ["referenced_by_workflows"]
+    assert preview["blocked"][2]["workflow_references"][0]["workflow_id"] == 20
+    assert preview["blocked"][2]["workflow_references"][0]["field"] == "assign_tags"
     assert preview["missing_ids"] == [99]
     assert preview["requires_explicit_user_approval"] is True
     assert result["dry_run"] is True
@@ -416,6 +482,11 @@ async def test_bulk_edit_objects_rechecks_then_uses_matching_rest_endpoint() -> 
         body = json.loads(request.content) if request.content else None
         seen.append((request.method, request.url.path, body))
         if request.method == "GET":
+            if request.url.path == "/paperless/api/workflows/":
+                return httpx.Response(
+                    200,
+                    json={"count": 0, "next": None, "results": []},
+                )
             return httpx.Response(
                 200,
                 json={
@@ -441,6 +512,7 @@ async def test_bulk_edit_objects_rechecks_then_uses_matching_rest_endpoint() -> 
 
     assert seen == [
         ("GET", "/paperless/api/correspondents/", None),
+        ("GET", "/paperless/api/workflows/", None),
         (
             "POST",
             "/paperless/api/bulk_edit_objects/",
@@ -460,6 +532,8 @@ async def test_delete_used_organization_item_is_blocked_before_mutation() -> Non
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method != "GET":
             raise AssertionError("Referenced item must not be deleted")
+        if request.url.path == "/paperless/api/workflows/":
+            return httpx.Response(200, json={"count": 0, "next": None, "results": []})
         return httpx.Response(
             200,
             json={
@@ -480,3 +554,35 @@ async def test_delete_used_organization_item_is_blocked_before_mutation() -> Non
                 "delete",
                 dry_run=False,
             )
+
+
+@pytest.mark.asyncio
+async def test_document_notes_maps_list_and_create_to_rest_subresource() -> None:
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        seen.append((request.method, request.url.path, body))
+        return httpx.Response(200, json={"count": 1, "results": [{"id": 9, "note": "Reason"}]})
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.document_notes(5, "list", note=None, page=1, page_size=20)
+        await client.document_notes(
+            5,
+            "create",
+            note="Moved to trash; restore by removing tag X.",
+            page=1,
+            page_size=20,
+        )
+
+    assert seen == [
+        ("GET", "/paperless/api/documents/5/notes/", None),
+        (
+            "POST",
+            "/paperless/api/documents/5/notes/",
+            {"note": "Moved to trash; restore by removing tag X."},
+        ),
+    ]

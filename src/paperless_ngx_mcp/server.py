@@ -48,8 +48,8 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         instructions=(
             "Search and inspect the user's local Paperless-ngx archive and organization. "
             "Use get_organization_overview before assessing tags, correspondents, document "
-            "types, storage paths, custom fields, or saved views. Treat unused entries as "
-            "review candidates. Use bulk_edit_objects with dry_run=true before deleting "
+            "types, storage paths, custom fields, saved views, or workflows. Treat unused "
+            "entries as review candidates. Use bulk_edit_objects with dry_run=true before deleting "
             "organization items, show its reference-check preview, and obtain explicit user "
             "approval before repeating with dry_run=false. Read tools are safe; writes are "
             "disabled by default. Permanent document deletion is unavailable: the server never "
@@ -108,9 +108,14 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
     async def get_document(
         document_id: int,
         include_content: bool = True,
+        include_file_metadata: bool = False,
         max_content_chars: int = 20_000,
     ) -> JsonObject:
-        """Return metadata and optionally OCR text for one document."""
+        """Return a document, optionally with OCR text and file checksums.
+
+        include_file_metadata also calls GET /api/documents/{id}/metadata/ and
+        includes original_checksum, archive_checksum, sizes, and MIME information.
+        """
         if document_id < 1:
             raise ValueError("document_id must be positive")
         if not 1_000 <= max_content_chars <= 200_000:
@@ -120,6 +125,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
             return await paperless.get_document(
                 document_id,
                 include_content=include_content,
+                include_file_metadata=include_file_metadata,
                 max_content_chars=max_content_chars,
             )
 
@@ -132,6 +138,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
             "storage_paths",
             "custom_fields",
             "saved_views",
+            "workflows",
         ],
         page: int = 1,
         page_size: int = 100,
@@ -140,7 +147,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         """List organization records with full metadata and human-readable matching modes.
 
         Supports tags, correspondents, document types, storage paths, custom fields,
-        and saved views. Use pagination to inspect large collections.
+        saved views, and workflows. Use pagination to inspect large collections.
         """
         if page < 1:
             raise ValueError("page must be at least 1")
@@ -441,35 +448,50 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
     @server.tool(annotations=WRITE, tags={"paperless", "documents", "write"})
     async def update_document(
         document_id: int,
-        title: str | None = None,
-        created: date | None = None,
-        correspondent_id: int | None = None,
-        document_type_id: int | None = None,
-        storage_path_id: int | None = None,
-        tag_ids: list[int] | None = None,
-        archive_serial_number: int | None = None,
+        changes: dict[str, Any],
     ) -> JsonObject:
-        """Update selected metadata on a document.
+        """PATCH selected document metadata using Paperless REST field names.
 
-        The tool is blocked while PAPERLESS_READ_ONLY=true (the default).
-        Only supplied fields are changed.
+        Allowed fields are title, created, correspondent, document_type,
+        storage_path, tags, and archive_serial_number. Null clears nullable
+        fields; tags is the complete replacement list. Read-only mode blocks writes.
         """
         if document_id < 1:
             raise ValueError("document_id must be positive")
-
-        values: dict[str, Any] = {
-            "title": title,
-            "created": created.isoformat() if created else None,
-            "correspondent": correspondent_id,
-            "document_type": document_type_id,
-            "storage_path": storage_path_id,
-            "tags": tag_ids,
-            "archive_serial_number": archive_serial_number,
-        }
-        changes = {key: value for key, value in values.items() if value is not None}
+        _validate_document_changes(changes)
 
         async with use_client() as paperless:
             return await paperless.update_document(document_id, changes)
+
+    @server.tool(annotations=CREATE, tags={"paperless", "documents", "notes", "write"})
+    async def document_notes(
+        document_id: int,
+        operation: Literal["list", "create"],
+        note: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> JsonObject:
+        """List or create entries in GET/POST /api/documents/{id}/notes/.
+
+        Creating a note requires PAPERLESS_READ_ONLY=false. Note deletion is not
+        exposed because all HTTP DELETE requests remain blocked.
+        """
+        if document_id < 1:
+            raise ValueError("document_id must be positive")
+        if page < 1:
+            raise ValueError("page must be at least 1")
+        if not 1 <= page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
+        if operation == "list" and note is not None:
+            raise ValueError("note is only valid when operation='create'")
+        async with use_client() as paperless:
+            return await paperless.document_notes(
+                document_id,
+                operation,
+                note=note,
+                page=page,
+                page_size=page_size,
+            )
 
     return server
 
@@ -610,8 +632,58 @@ def _validate_organization_item_ids(item_ids: list[int]) -> None:
         raise ValueError("item_ids must not contain duplicates")
 
 
+def _validate_document_changes(changes: dict[str, Any]) -> None:
+    allowed_fields = {
+        "title",
+        "created",
+        "correspondent",
+        "document_type",
+        "storage_path",
+        "tags",
+        "archive_serial_number",
+    }
+    if not changes:
+        raise ValueError("changes must not be empty")
+    unsupported = sorted(set(changes) - allowed_fields)
+    if unsupported:
+        raise ValueError(f"Unsupported document fields: {unsupported}")
+
+    if "title" in changes:
+        title = changes["title"]
+        if not isinstance(title, str) or not title.strip() or len(title) > 128:
+            raise ValueError("title must be a non-empty string with at most 128 characters")
+    if "created" in changes:
+        created = changes["created"]
+        if not isinstance(created, str):
+            raise ValueError("created must be an ISO date string")
+        try:
+            date.fromisoformat(created)
+        except ValueError as exc:
+            raise ValueError("created must be an ISO date string") from exc
+    for field in ("correspondent", "document_type", "storage_path"):
+        value = changes.get(field)
+        if value is not None and (
+            not isinstance(value, int) or isinstance(value, bool) or value < 1
+        ):
+            raise ValueError(f"{field} must be a positive integer or null")
+    if "tags" in changes:
+        tags = changes["tags"]
+        if not isinstance(tags, list):
+            raise ValueError("tags must be a list of positive IDs")
+        _validate_positive_ids(tags, "tags")
+        if len(set(tags)) != len(tags):
+            raise ValueError("tags must not contain duplicates")
+    archive_serial_number = changes.get("archive_serial_number")
+    if archive_serial_number is not None and (
+        not isinstance(archive_serial_number, int)
+        or isinstance(archive_serial_number, bool)
+        or not 0 <= archive_serial_number <= 4_294_967_295
+    ):
+        raise ValueError("archive_serial_number must be between 0 and 4294967295 or null")
+
+
 def _validate_positive_ids(values: list[int], field_name: str) -> None:
-    if any(value < 1 for value in values):
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 1 for value in values):
         raise ValueError(f"{field_name} must contain only positive IDs")
 
 
