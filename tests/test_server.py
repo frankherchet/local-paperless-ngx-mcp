@@ -17,6 +17,7 @@ async def test_server_exposes_expected_tools() -> None:
         "find_documents_by_metadata",
         "create_organization_item",
         "update_organization_item",
+        "bulk_edit_objects",
         "set_document_metadata_field",
         "modify_document_tags",
         "move_documents_to_trash",
@@ -24,7 +25,9 @@ async def test_server_exposes_expected_tools() -> None:
         "restore_documents_from_trash",
         "update_document",
     }
-    assert all("delete" not in tool.name and "empty_trash" not in tool.name for tool in tools)
+    assert all(
+        "delete_document" not in tool.name and "empty_trash" not in tool.name for tool in tools
+    )
 
     read_tool = next(tool for tool in tools if tool.name == "get_organization_overview")
     assert read_tool.annotations is not None
@@ -38,3 +41,8 @@ async def test_server_exposes_expected_tools() -> None:
     trash_tool = next(tool for tool in tools if tool.name == "move_documents_to_trash")
     assert trash_tool.annotations is not None
     assert trash_tool.annotations.destructiveHint is True
+
+    object_bulk_tool = next(tool for tool in tools if tool.name == "bulk_edit_objects")
+    assert object_bulk_tool.annotations is not None
+    assert object_bulk_tool.annotations.readOnlyHint is False
+    assert object_bulk_tool.annotations.destructiveHint is True

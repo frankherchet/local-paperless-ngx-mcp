@@ -33,6 +33,12 @@ TRASH = ToolAnnotations(
     idempotentHint=False,
     openWorldHint=True,
 )
+OBJECT_BULK_WRITE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=True,
+    openWorldHint=True,
+)
 
 
 def create_server(client: PaperlessClient | None = None) -> FastMCP:
@@ -43,9 +49,11 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
             "Search and inspect the user's local Paperless-ngx archive and organization. "
             "Use get_organization_overview before assessing tags, correspondents, document "
             "types, storage paths, custom fields, or saved views. Treat unused entries as "
-            "review candidates, not deletion recommendations. Read tools are safe; document "
-            "updates are disabled by default. Permanent deletion is unavailable: the server "
-            "never issues HTTP DELETE and never empties Paperless trash."
+            "review candidates. Use bulk_edit_objects with dry_run=true before deleting "
+            "organization items, show its reference-check preview, and obtain explicit user "
+            "approval before repeating with dry_run=false. Read tools are safe; writes are "
+            "disabled by default. Permanent document deletion is unavailable: the server never "
+            "issues HTTP DELETE and never empties Paperless trash."
         ),
         version=__version__,
     )
@@ -330,6 +338,40 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         async with use_client() as paperless:
             return await paperless.update_organization_item(object_type, item_id, changes)
 
+    @server.tool(
+        annotations=OBJECT_BULK_WRITE,
+        tags={"paperless", "organization", "delete", "write"},
+    )
+    async def bulk_edit_objects(
+        objects: list[int],
+        object_type: Literal[
+            "tags",
+            "correspondents",
+            "document_types",
+            "storage_paths",
+        ],
+        operation: Literal["delete"],
+        dry_run: bool = True,
+    ) -> JsonObject:
+        """Bulk-edit Paperless organization objects through the matching REST endpoint.
+
+        Mirrors POST /api/bulk_edit_objects/ using the REST fields objects,
+        object_type, and operation. The currently allowed operation is delete for
+        tags, correspondents, document types, and storage paths. With dry_run=true
+        (default), it only performs the reference check and returns a request preview.
+        After explicit user approval, repeat the same call with dry_run=false.
+        Both modes reject the complete request if an object is used, missing, or a
+        parent tag. This endpoint cannot target documents and never uses HTTP DELETE.
+        """
+        _validate_organization_item_ids(objects)
+        async with use_client() as paperless:
+            return await paperless.bulk_edit_objects(
+                object_type,
+                objects,
+                operation,
+                dry_run=dry_run,
+            )
+
     @server.tool(annotations=WRITE, tags={"paperless", "organization", "documents", "write"})
     async def set_document_metadata_field(
         document_ids: list[int],
@@ -556,6 +598,16 @@ def _validate_document_ids(document_ids: list[int]) -> None:
     _validate_positive_ids(document_ids, "document_ids")
     if len(set(document_ids)) != len(document_ids):
         raise ValueError("document_ids must not contain duplicates")
+
+
+def _validate_organization_item_ids(item_ids: list[int]) -> None:
+    if not item_ids:
+        raise ValueError("item_ids must not be empty")
+    if len(item_ids) > 100:
+        raise ValueError("item_ids must contain at most 100 IDs")
+    _validate_positive_ids(item_ids, "item_ids")
+    if len(set(item_ids)) != len(item_ids):
+        raise ValueError("item_ids must not contain duplicates")
 
 
 def _validate_positive_ids(values: list[int], field_name: str) -> None:

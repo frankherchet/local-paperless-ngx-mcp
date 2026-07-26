@@ -101,6 +101,7 @@ Umgebungsvariablen an den Prozess übergeben.
 | `find_documents_by_metadata` | Dokumente zu einem Organisationsobjekt finden | Nein |
 | `create_organization_item` | Organisationsobjekte erstellen | Ja |
 | `update_organization_item` | Organisationsobjekte umbenennen oder konfigurieren | Ja |
+| `bulk_edit_objects` | `/api/bulk_edit_objects/` mit Vorschau und Sicherheitsprüfung | Optional |
 | `set_document_metadata_field` | Korrespondent, Typ oder Speicherpfad setzen/leeren | Ja |
 | `modify_document_tags` | Tags additiv hinzufügen oder entfernen | Ja |
 | `list_trashed_documents` | Inhalt des Papierkorbs auflisten | Nein |
@@ -125,6 +126,24 @@ löschen:
 - `move_documents_to_trash` nutzt ausschließlich Paperless' wiederherstellbaren
   Papierkorb.
 
+Unbenutzte Tags, Korrespondenten, Dokumenttypen und Speicherpfade können dagegen
+über das REST-orientierte Tool `bulk_edit_objects` gezielt entfernt werden. Das
+Tool bildet `POST /api/bulk_edit_objects/` mit den API-Feldern `objects`,
+`object_type` und `operation` ab. Sicherheitsvorkehrungen werden zentral
+angewendet:
+
+1. Der Standard `dry_run=true` prüft `document_count`; bei Tags werden zusätzlich
+   untergeordnete Tags als Referenzen berücksichtigt.
+2. Das Ergebnis wird dem Benutzer gezeigt und die ausdrückliche Freigabe
+   eingeholt.
+3. Derselbe Aufruf mit `dry_run=false` wiederholt die Referenzprüfung unmittelbar
+   vor dem Löschen und bricht die gesamte Anfrage ab, wenn ein Eintrag verwendet
+   wird oder nicht mehr existiert.
+
+Das Bulk-Tool ist im MCP als destruktiv markiert. Für `operation=delete` sind nur
+die vier genannten Organisationstypen freigegeben. Dokumente, Custom Fields,
+Saved Views und andere Objekte sind darüber nicht löschbar.
+
 ### Organisationsprüfung mit AI
 
 Die Analyse-Tools laden keine OCR-Inhalte. Ein sinnvoller Einstieg in einem
@@ -146,8 +165,9 @@ Empfohlener Ablauf:
 2. Vorgeschlagene Zielstruktur durch den Benutzer bestätigen lassen.
 3. `PAPERLESS_READ_ONLY=false` setzen und den MCP neu starten.
 4. Änderungen in kleinen Batches durchführen und jeweils kontrollieren.
-5. Nicht mehr benötigte Organisationsobjekte manuell in Paperless löschen; der
-   MCP bietet bewusst keine Löschtools an.
+5. Unbenutzte Organisationsobjekte mit `bulk_edit_objects` und `dry_run=true`
+   prüfen, die Vorschau bestätigen lassen und denselben Aufruf anschließend mit
+   `dry_run=false` ausführen.
 
 ## Entwicklung
 

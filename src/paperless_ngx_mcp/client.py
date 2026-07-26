@@ -40,6 +40,13 @@ WRITABLE_ORGANIZATION_OBJECT_TYPES = {
     "custom_fields",
 }
 
+DELETABLE_ORGANIZATION_OBJECT_TYPES = {
+    "tags",
+    "correspondents",
+    "document_types",
+    "storage_paths",
+}
+
 SAFE_BULK_DOCUMENT_METHODS = {
     "set_correspondent",
     "set_document_type",
@@ -154,6 +161,12 @@ class PaperlessClient:
                 "empty_trash": False,
                 "http_delete_requests": False,
                 "move_to_trash": not self.settings.paperless_read_only,
+                "bulk_edit_objects": {
+                    "enabled": not self.settings.paperless_read_only,
+                    "allowed_types": sorted(DELETABLE_ORGANIZATION_OBJECT_TYPES),
+                    "allowed_operations": ["delete"],
+                    "delete_reference_check_required": True,
+                },
             },
         }
 
@@ -345,6 +358,124 @@ class PaperlessClient:
             raise ValueError("At least one organization change must be provided")
         return await self.request("PATCH", f"api/{object_type}/{item_id}/", json=changes)
 
+    async def _preview_organization_object_deletion(
+        self,
+        object_type: str,
+        item_ids: list[int] | None,
+    ) -> JsonObject:
+        """Check document and tag-hierarchy references before metadata deletion."""
+        self._validate_deletable_object_type(object_type)
+        items = await self._fetch_all_objects(object_type)
+        selected_ids = set(item_ids) if item_ids is not None else None
+        items_by_id = {
+            item["id"]: item
+            for item in items
+            if isinstance(item.get("id"), int)
+            and (selected_ids is None or item["id"] in selected_ids)
+        }
+
+        child_tag_ids: dict[int, list[int]] = {}
+        if object_type == "tags":
+            for item in items:
+                item_id = item.get("id")
+                parent_id = item.get("parent")
+                if isinstance(item_id, int) and isinstance(parent_id, int):
+                    child_tag_ids.setdefault(parent_id, []).append(item_id)
+
+        candidates: list[JsonObject] = []
+        blocked: list[JsonObject] = []
+        referenced_items_omitted = 0
+        for item_id in sorted(items_by_id):
+            item = items_by_id[item_id]
+            document_count = item.get("document_count")
+            children = sorted(child_tag_ids.get(item_id, []))
+            if selected_ids is None and isinstance(document_count, int) and document_count > 0:
+                referenced_items_omitted += 1
+                continue
+            reasons: list[str] = []
+            if not isinstance(document_count, int):
+                reasons.append("document_count_unavailable")
+            elif document_count != 0:
+                reasons.append("referenced_by_documents")
+            if children:
+                reasons.append("parent_of_tags")
+
+            assessment: JsonObject = {
+                "id": item_id,
+                "name": item.get("name"),
+                "document_count": document_count,
+                "child_tag_ids": children,
+                "deletable": not reasons,
+                "blocking_reasons": reasons,
+            }
+            if object_type == "storage_paths":
+                assessment["path"] = item.get("path")
+            (candidates if not reasons else blocked).append(assessment)
+
+        missing_ids = sorted(selected_ids - set(items_by_id)) if selected_ids is not None else []
+        return {
+            "object_type": object_type,
+            "requested_ids": sorted(selected_ids) if selected_ids is not None else None,
+            "candidates": candidates,
+            "blocked": blocked,
+            "missing_ids": missing_ids,
+            "candidate_count": len(candidates),
+            "blocked_count": len(blocked),
+            "scanned_count": len(items),
+            "referenced_items_omitted": referenced_items_omitted,
+            "reference_checks": ["document_count"]
+            + (["child_tag_relationships"] if object_type == "tags" else []),
+            "requires_explicit_user_approval": True,
+        }
+
+    async def bulk_edit_objects(
+        self,
+        object_type: str,
+        objects: list[int],
+        operation: str,
+        *,
+        dry_run: bool,
+    ) -> JsonObject:
+        """Mirror Paperless object bulk editing with centralized safety checks."""
+        self._validate_deletable_object_type(object_type)
+        if operation != "delete":
+            raise ValueError(f"Unsupported object bulk operation: {operation}")
+        if not dry_run:
+            self._ensure_write_enabled()
+
+        preview = await self._preview_organization_object_deletion(object_type, objects)
+        blocked = preview["blocked"]
+        missing_ids = preview["missing_ids"]
+        if not dry_run and (blocked or missing_ids):
+            raise ValueError(
+                "Organization deletion blocked by reference check: "
+                f"blocked={blocked}, missing_ids={missing_ids}"
+            )
+
+        result: JsonObject = {
+            "dry_run": dry_run,
+            "operation": operation,
+            "object_type": object_type,
+            "objects": objects,
+            "preflight": preview,
+            "deletion_submitted": False,
+        }
+        if dry_run:
+            return result
+
+        response = await self.request(
+            "POST",
+            "api/bulk_edit_objects/",
+            json={
+                "objects": objects,
+                "object_type": object_type,
+                "operation": operation,
+            },
+        )
+        result["deletion_submitted"] = True
+        result["paperless_response"] = response
+        return result
+
     async def set_document_metadata_field(
         self,
         document_ids: list[int],
@@ -485,6 +616,11 @@ class PaperlessClient:
             raise ValueError(f"Unsupported writable organization object type: {object_type}")
 
     @staticmethod
+    def _validate_deletable_object_type(object_type: str) -> None:
+        if object_type not in DELETABLE_ORGANIZATION_OBJECT_TYPES:
+            raise ValueError(f"Unsupported deletable organization object type: {object_type}")
+
+    @staticmethod
     def _enforce_deletion_safety(
         method: str,
         path: str,
@@ -495,6 +631,28 @@ class PaperlessClient:
             raise PermanentDeletionDisabled(
                 "HTTP DELETE is disabled in this MCP server. "
                 "Documents can only be moved to Paperless trash."
+            )
+        if method.upper() == "POST" and normalized_path == "api/bulk_edit_objects/":
+            object_type = json.get("object_type") if json is not None else None
+            operation = json.get("operation") if json is not None else None
+            object_ids = json.get("objects") if json is not None else None
+            valid_ids = (
+                isinstance(object_ids, list)
+                and bool(object_ids)
+                and all(
+                    isinstance(item_id, int) and not isinstance(item_id, bool) and item_id > 0
+                    for item_id in object_ids
+                )
+            )
+            if (
+                object_type in DELETABLE_ORGANIZATION_OBJECT_TYPES
+                and operation == "delete"
+                and valid_ids
+            ):
+                return
+            raise PermanentDeletionDisabled(
+                "Object bulk editing is restricted to deleting explicitly selected tags, "
+                "correspondents, document types, or storage paths."
             )
         if method.upper() == "POST" and normalized_path == "api/trash/":
             action = json.get("action") if json is not None else None

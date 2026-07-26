@@ -284,6 +284,17 @@ async def test_permanent_document_deletion_is_blocked_before_network() -> None:
                 json={"documents": [42], "method": "merge", "parameters": {}},
             )
 
+        with pytest.raises(PermanentDeletionDisabled, match="Object bulk editing is restricted"):
+            await client.request(
+                "POST",
+                "api/bulk_edit_objects/",
+                json={
+                    "objects": [42],
+                    "object_type": "custom_fields",
+                    "operation": "delete",
+                },
+            )
+
 
 @pytest.mark.asyncio
 async def test_document_organization_writes_use_allowlisted_bulk_methods() -> None:
@@ -355,3 +366,117 @@ async def test_create_and_update_organization_items_use_no_delete_method() -> No
         ("POST", "/paperless/api/tags/", {"name": "Finance"}),
         ("PATCH", "/paperless/api/tags/8/", {"name": "Finances"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_bulk_edit_objects_dry_run_checks_documents_and_child_tags() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/paperless/api/tags/"
+        return httpx.Response(
+            200,
+            json={
+                "count": 3,
+                "next": None,
+                "results": [
+                    {"id": 1, "name": "Parent", "document_count": 0, "parent": None},
+                    {"id": 2, "name": "Used", "document_count": 4, "parent": None},
+                    {"id": 3, "name": "Leaf", "document_count": 0, "parent": 1},
+                ],
+            },
+        )
+
+    async with PaperlessClient(
+        make_settings(),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.bulk_edit_objects(
+            "tags",
+            [1, 2, 3, 99],
+            "delete",
+            dry_run=True,
+        )
+
+    preview = result["preflight"]
+    assert [item["id"] for item in preview["candidates"]] == [3]
+    assert [item["id"] for item in preview["blocked"]] == [1, 2]
+    assert preview["blocked"][0]["blocking_reasons"] == ["parent_of_tags"]
+    assert preview["blocked"][1]["blocking_reasons"] == ["referenced_by_documents"]
+    assert preview["missing_ids"] == [99]
+    assert preview["requires_explicit_user_approval"] is True
+    assert result["dry_run"] is True
+    assert result["deletion_submitted"] is False
+
+
+@pytest.mark.asyncio
+async def test_bulk_edit_objects_rechecks_then_uses_matching_rest_endpoint() -> None:
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        seen.append((request.method, request.url.path, body))
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [
+                        {"id": 12, "name": "Unused sender", "document_count": 0},
+                    ],
+                },
+            )
+        return httpx.Response(200, json={"result": "OK"})
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.bulk_edit_objects(
+            "correspondents",
+            [12],
+            "delete",
+            dry_run=False,
+        )
+
+    assert seen == [
+        ("GET", "/paperless/api/correspondents/", None),
+        (
+            "POST",
+            "/paperless/api/bulk_edit_objects/",
+            {
+                "objects": [12],
+                "object_type": "correspondents",
+                "operation": "delete",
+            },
+        ),
+    ]
+    assert result["deletion_submitted"] is True
+    assert result["preflight"]["candidate_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_used_organization_item_is_blocked_before_mutation() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method != "GET":
+            raise AssertionError("Referenced item must not be deleted")
+        return httpx.Response(
+            200,
+            json={
+                "count": 1,
+                "next": None,
+                "results": [{"id": 7, "name": "Used type", "document_count": 2}],
+            },
+        )
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(ValueError, match="referenced_by_documents"):
+            await client.bulk_edit_objects(
+                "document_types",
+                [7],
+                "delete",
+                dry_run=False,
+            )
