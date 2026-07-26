@@ -32,6 +32,33 @@ MISSING_METADATA_FILTERS: dict[str, tuple[str, QueryValue]] = {
     "archive_serial_number": ("archive_serial_number__isnull", True),
 }
 
+WRITABLE_ORGANIZATION_OBJECT_TYPES = {
+    "tags",
+    "correspondents",
+    "document_types",
+    "storage_paths",
+    "custom_fields",
+}
+
+SAFE_BULK_DOCUMENT_METHODS = {
+    "set_correspondent",
+    "set_document_type",
+    "set_storage_path",
+    "add_tag",
+    "remove_tag",
+    "modify_tags",
+    "modify_custom_fields",
+    "delete",  # Paperless moves documents to its reversible trash.
+}
+
+DOCUMENT_METADATA_FILTERS = {
+    "tag": "tags__id",
+    "correspondent": "correspondent__id",
+    "document_type": "document_type__id",
+    "storage_path": "storage_path__id",
+    "custom_field": "custom_fields__id__in",
+}
+
 
 class PaperlessError(RuntimeError):
     """Base error raised for Paperless API failures."""
@@ -47,6 +74,10 @@ class PaperlessApiError(PaperlessError):
 
 class ReadOnlyError(PaperlessError):
     """A write was attempted while read-only mode is active."""
+
+
+class PermanentDeletionDisabled(PaperlessError):
+    """The requested operation could permanently delete Paperless data."""
 
 
 class PaperlessClient:
@@ -87,6 +118,7 @@ class PaperlessClient:
         params: Mapping[str, QueryValue] | None = None,
         json: JsonObject | None = None,
     ) -> JsonObject:
+        self._enforce_deletion_safety(method, path, json)
         response = await self._client.request(method, path.lstrip("/"), params=params, json=json)
         if response.is_error:
             raise PaperlessApiError(response.status_code, self._error_message(response))
@@ -117,6 +149,12 @@ class PaperlessClient:
             "document_count": payload.get("count") if isinstance(payload, dict) else None,
             "read_only": self.settings.paperless_read_only,
             "base_url": self.settings.base_url,
+            "safety_policy": {
+                "permanent_document_deletion": False,
+                "empty_trash": False,
+                "http_delete_requests": False,
+                "move_to_trash": not self.settings.paperless_read_only,
+            },
         }
 
     async def search_documents(
@@ -252,14 +290,155 @@ class PaperlessClient:
         payload["missing_field"] = missing_field
         return payload
 
+    async def find_documents_by_metadata(
+        self,
+        object_type: str,
+        object_id: int,
+        *,
+        page: int,
+        page_size: int,
+        ordering: str,
+    ) -> JsonObject:
+        try:
+            filter_name = DOCUMENT_METADATA_FILTERS[object_type]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported metadata object type: {object_type}") from exc
+
+        payload = await self.request(
+            "GET",
+            "api/documents/",
+            params={
+                filter_name: object_id,
+                "page": page,
+                "page_size": page_size,
+                "ordering": ordering,
+                "truncate_content": True,
+            },
+        )
+        payload.pop("all", None)
+        results = payload.get("results")
+        if isinstance(results, list):
+            payload["results"] = [
+                self._document_summary(item) for item in results if isinstance(item, dict)
+            ]
+        payload["metadata"] = {"object_type": object_type, "object_id": object_id}
+        return payload
+
+    async def create_organization_item(
+        self,
+        object_type: str,
+        values: JsonObject,
+    ) -> JsonObject:
+        self._ensure_write_enabled()
+        self._validate_writable_object_type(object_type)
+        return await self.request("POST", f"api/{object_type}/", json=values)
+
+    async def update_organization_item(
+        self,
+        object_type: str,
+        item_id: int,
+        changes: JsonObject,
+    ) -> JsonObject:
+        self._ensure_write_enabled()
+        self._validate_writable_object_type(object_type)
+        if not changes:
+            raise ValueError("At least one organization change must be provided")
+        return await self.request("PATCH", f"api/{object_type}/{item_id}/", json=changes)
+
+    async def set_document_metadata_field(
+        self,
+        document_ids: list[int],
+        field: str,
+        value_id: int | None,
+    ) -> JsonObject:
+        methods = {
+            "correspondent": ("set_correspondent", "correspondent"),
+            "document_type": ("set_document_type", "document_type"),
+            "storage_path": ("set_storage_path", "storage_path"),
+        }
+        try:
+            method, parameter_name = methods[field]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported document metadata field: {field}") from exc
+        return await self._bulk_edit_documents(
+            document_ids,
+            method,
+            {parameter_name: value_id},
+        )
+
+    async def modify_document_tags(
+        self,
+        document_ids: list[int],
+        *,
+        add_tag_ids: list[int],
+        remove_tag_ids: list[int],
+    ) -> JsonObject:
+        if not add_tag_ids and not remove_tag_ids:
+            raise ValueError("At least one tag must be added or removed")
+        return await self._bulk_edit_documents(
+            document_ids,
+            "modify_tags",
+            {
+                "add_tags": add_tag_ids,
+                "remove_tags": remove_tag_ids,
+            },
+        )
+
+    async def move_documents_to_trash(self, document_ids: list[int]) -> JsonObject:
+        """Move documents to Paperless trash; this does not permanently delete them."""
+        return await self._bulk_edit_documents(document_ids, "delete", {})
+
+    async def list_trashed_documents(
+        self,
+        *,
+        page: int,
+        page_size: int,
+    ) -> JsonObject:
+        payload = await self.request(
+            "GET",
+            "api/trash/",
+            params={"page": page, "page_size": page_size},
+        )
+        payload.pop("all", None)
+        results = payload.get("results")
+        if isinstance(results, list):
+            payload["results"] = [
+                self._document_summary(item) for item in results if isinstance(item, dict)
+            ]
+        return payload
+
+    async def restore_documents_from_trash(self, document_ids: list[int]) -> JsonObject:
+        self._ensure_write_enabled()
+        return await self.request(
+            "POST",
+            "api/trash/",
+            json={"documents": document_ids, "action": "restore"},
+        )
+
     async def update_document(self, document_id: int, changes: JsonObject) -> JsonObject:
-        if self.settings.paperless_read_only:
-            raise ReadOnlyError(
-                "Write tools are disabled. Set PAPERLESS_READ_ONLY=false to enable updates."
-            )
+        self._ensure_write_enabled()
         if not changes:
             raise ValueError("At least one change must be provided")
         return await self.request("PATCH", f"api/documents/{document_id}/", json=changes)
+
+    async def _bulk_edit_documents(
+        self,
+        document_ids: list[int],
+        method: str,
+        parameters: JsonObject,
+    ) -> JsonObject:
+        self._ensure_write_enabled()
+        if method not in SAFE_BULK_DOCUMENT_METHODS:
+            raise PermanentDeletionDisabled(f"Bulk document method is not allowed: {method}")
+        return await self.request(
+            "POST",
+            "api/documents/bulk_edit/",
+            json={
+                "documents": document_ids,
+                "method": method,
+                "parameters": parameters,
+            },
+        )
 
     async def _fetch_all_objects(self, object_type: str) -> list[JsonObject]:
         page = 1
@@ -293,6 +472,48 @@ class PaperlessClient:
         if not isinstance(count, int):
             raise PaperlessApiError(200, "Document count response was invalid")
         return count
+
+    def _ensure_write_enabled(self) -> None:
+        if self.settings.paperless_read_only:
+            raise ReadOnlyError(
+                "Write tools are disabled. Set PAPERLESS_READ_ONLY=false to enable updates."
+            )
+
+    @staticmethod
+    def _validate_writable_object_type(object_type: str) -> None:
+        if object_type not in WRITABLE_ORGANIZATION_OBJECT_TYPES:
+            raise ValueError(f"Unsupported writable organization object type: {object_type}")
+
+    @staticmethod
+    def _enforce_deletion_safety(
+        method: str,
+        path: str,
+        json: JsonObject | None,
+    ) -> None:
+        normalized_path = path.lstrip("/")
+        if method.upper() == "DELETE":
+            raise PermanentDeletionDisabled(
+                "HTTP DELETE is disabled in this MCP server. "
+                "Documents can only be moved to Paperless trash."
+            )
+        if method.upper() == "POST" and normalized_path == "api/trash/":
+            action = json.get("action") if json is not None else None
+            if action == "restore":
+                return
+            raise PermanentDeletionDisabled(
+                "Only restoring documents is allowed on the Paperless trash endpoint. "
+                "Emptying trash is permanently disabled."
+            )
+        if (
+            method.upper() == "POST"
+            and normalized_path == "api/documents/bulk_edit/"
+            and json is not None
+        ):
+            bulk_method = json.get("method")
+            if bulk_method not in SAFE_BULK_DOCUMENT_METHODS:
+                raise PermanentDeletionDisabled(
+                    f"Bulk document method is not allowed: {bulk_method}"
+                )
 
     @staticmethod
     def _enrich_object_results(payload: JsonObject) -> JsonObject:

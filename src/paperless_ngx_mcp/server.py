@@ -21,6 +21,18 @@ WRITE = ToolAnnotations(
     idempotentHint=True,
     openWorldHint=True,
 )
+CREATE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+TRASH = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True,
+)
 
 
 def create_server(client: PaperlessClient | None = None) -> FastMCP:
@@ -32,7 +44,8 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
             "Use get_organization_overview before assessing tags, correspondents, document "
             "types, storage paths, custom fields, or saved views. Treat unused entries as "
             "review candidates, not deletion recommendations. Read tools are safe; document "
-            "updates are disabled by default."
+            "updates are disabled by default. Permanent deletion is unavailable: the server "
+            "never issues HTTP DELETE and never empties Paperless trash."
         ),
         version=__version__,
     )
@@ -180,6 +193,209 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
                 ordering=ordering,
             )
 
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "organization", "documents"})
+    async def find_documents_by_metadata(
+        object_type: Literal[
+            "tag",
+            "correspondent",
+            "document_type",
+            "storage_path",
+            "custom_field",
+        ],
+        object_id: int,
+        page: int = 1,
+        page_size: int = 20,
+        ordering: str = "-created",
+    ) -> JsonObject:
+        """Find compact document records assigned to one organization item."""
+        if object_id < 1:
+            raise ValueError("object_id must be positive")
+        if page < 1:
+            raise ValueError("page must be at least 1")
+        if not 1 <= page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
+
+        async with use_client() as paperless:
+            return await paperless.find_documents_by_metadata(
+                object_type,
+                object_id,
+                page=page,
+                page_size=page_size,
+                ordering=ordering,
+            )
+
+    @server.tool(annotations=CREATE, tags={"paperless", "organization", "write"})
+    async def create_organization_item(
+        object_type: Literal[
+            "tags",
+            "correspondents",
+            "document_types",
+            "storage_paths",
+            "custom_fields",
+        ],
+        name: str,
+        path: str | None = None,
+        color: str | None = None,
+        parent_id: int | None = None,
+        match: str = "",
+        matching_algorithm: int = 0,
+        is_insensitive: bool = True,
+        is_inbox_tag: bool = False,
+        data_type: Literal[
+            "string",
+            "url",
+            "date",
+            "boolean",
+            "integer",
+            "float",
+            "monetary",
+            "documentlink",
+            "select",
+            "longtext",
+        ]
+        | None = None,
+        extra_data: dict[str, Any] | None = None,
+    ) -> JsonObject:
+        """Create a tag, correspondent, document type, storage path, or custom field.
+
+        This tool never deletes or trashes documents. PAPERLESS_READ_ONLY must be false.
+        """
+        values = _organization_create_values(
+            object_type=object_type,
+            name=name,
+            path=path,
+            color=color,
+            parent_id=parent_id,
+            match=match,
+            matching_algorithm=matching_algorithm,
+            is_insensitive=is_insensitive,
+            is_inbox_tag=is_inbox_tag,
+            data_type=data_type,
+            extra_data=extra_data,
+        )
+        async with use_client() as paperless:
+            return await paperless.create_organization_item(object_type, values)
+
+    @server.tool(annotations=WRITE, tags={"paperless", "organization", "write"})
+    async def update_organization_item(
+        object_type: Literal[
+            "tags",
+            "correspondents",
+            "document_types",
+            "storage_paths",
+            "custom_fields",
+        ],
+        item_id: int,
+        name: str | None = None,
+        path: str | None = None,
+        color: str | None = None,
+        parent_id: int | None = None,
+        clear_parent: bool = False,
+        match: str | None = None,
+        matching_algorithm: int | None = None,
+        is_insensitive: bool | None = None,
+        is_inbox_tag: bool | None = None,
+        data_type: Literal[
+            "string",
+            "url",
+            "date",
+            "boolean",
+            "integer",
+            "float",
+            "monetary",
+            "documentlink",
+            "select",
+            "longtext",
+        ]
+        | None = None,
+        extra_data: dict[str, Any] | None = None,
+    ) -> JsonObject:
+        """Rename or reconfigure one organization item without deleting it."""
+        if item_id < 1:
+            raise ValueError("item_id must be positive")
+        changes = _organization_update_values(
+            object_type=object_type,
+            name=name,
+            path=path,
+            color=color,
+            parent_id=parent_id,
+            clear_parent=clear_parent,
+            match=match,
+            matching_algorithm=matching_algorithm,
+            is_insensitive=is_insensitive,
+            is_inbox_tag=is_inbox_tag,
+            data_type=data_type,
+            extra_data=extra_data,
+        )
+        async with use_client() as paperless:
+            return await paperless.update_organization_item(object_type, item_id, changes)
+
+    @server.tool(annotations=WRITE, tags={"paperless", "organization", "documents", "write"})
+    async def set_document_metadata_field(
+        document_ids: list[int],
+        field: Literal["correspondent", "document_type", "storage_path"],
+        value_id: int | None,
+    ) -> JsonObject:
+        """Set or clear one metadata field on multiple documents.
+
+        Pass null as value_id to clear the selected field. No document is deleted.
+        """
+        _validate_document_ids(document_ids)
+        if value_id is not None and value_id < 1:
+            raise ValueError("value_id must be positive or null")
+        async with use_client() as paperless:
+            return await paperless.set_document_metadata_field(document_ids, field, value_id)
+
+    @server.tool(annotations=WRITE, tags={"paperless", "tags", "documents", "write"})
+    async def modify_document_tags(
+        document_ids: list[int],
+        add_tag_ids: list[int] | None = None,
+        remove_tag_ids: list[int] | None = None,
+    ) -> JsonObject:
+        """Add and remove tags on multiple documents without replacing unrelated tags."""
+        _validate_document_ids(document_ids)
+        add_ids = add_tag_ids or []
+        remove_ids = remove_tag_ids or []
+        _validate_positive_ids(add_ids, "add_tag_ids")
+        _validate_positive_ids(remove_ids, "remove_tag_ids")
+        overlap = set(add_ids) & set(remove_ids)
+        if overlap:
+            raise ValueError(f"Tags cannot be added and removed together: {sorted(overlap)}")
+        async with use_client() as paperless:
+            return await paperless.modify_document_tags(
+                document_ids,
+                add_tag_ids=add_ids,
+                remove_tag_ids=remove_ids,
+            )
+
+    @server.tool(annotations=TRASH, tags={"paperless", "trash", "documents", "write"})
+    async def move_documents_to_trash(document_ids: list[int]) -> JsonObject:
+        """Move documents to Paperless trash, where they remain restorable.
+
+        This is the strongest document-removal action available. Permanent deletion
+        and emptying the trash are intentionally not implemented.
+        """
+        _validate_document_ids(document_ids)
+        async with use_client() as paperless:
+            return await paperless.move_documents_to_trash(document_ids)
+
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "trash", "documents"})
+    async def list_trashed_documents(page: int = 1, page_size: int = 20) -> JsonObject:
+        """List compact records of documents currently in Paperless trash."""
+        if page < 1:
+            raise ValueError("page must be at least 1")
+        if not 1 <= page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
+        async with use_client() as paperless:
+            return await paperless.list_trashed_documents(page=page, page_size=page_size)
+
+    @server.tool(annotations=WRITE, tags={"paperless", "trash", "documents", "write"})
+    async def restore_documents_from_trash(document_ids: list[int]) -> JsonObject:
+        """Restore documents from Paperless trash."""
+        _validate_document_ids(document_ids)
+        async with use_client() as paperless:
+            return await paperless.restore_documents_from_trash(document_ids)
+
     @server.tool(annotations=WRITE, tags={"paperless", "documents", "write"})
     async def update_document(
         document_id: int,
@@ -222,6 +438,143 @@ mcp = create_server()
 def main() -> None:
     """Run the local MCP server over stdio."""
     mcp.run(transport="stdio", show_banner=False)
+
+
+def _organization_create_values(
+    *,
+    object_type: str,
+    name: str,
+    path: str | None,
+    color: str | None,
+    parent_id: int | None,
+    match: str,
+    matching_algorithm: int,
+    is_insensitive: bool,
+    is_inbox_tag: bool,
+    data_type: str | None,
+    extra_data: dict[str, Any] | None,
+) -> JsonObject:
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("name must not be empty")
+    if len(clean_name) > 128:
+        raise ValueError("name must not exceed 128 characters")
+
+    values: JsonObject = {"name": clean_name}
+    if object_type in {"tags", "correspondents", "document_types", "storage_paths"}:
+        _validate_matching_algorithm(matching_algorithm)
+        values.update(
+            {
+                "match": match,
+                "matching_algorithm": matching_algorithm,
+                "is_insensitive": is_insensitive,
+            }
+        )
+    if object_type == "tags":
+        values["is_inbox_tag"] = is_inbox_tag
+        if color is not None:
+            _validate_color(color)
+            values["color"] = color
+        if parent_id is not None:
+            _validate_positive_ids([parent_id], "parent_id")
+            values["parent"] = parent_id
+    elif object_type == "storage_paths":
+        if path is None or not path.strip():
+            raise ValueError("path is required for storage_paths")
+        values["path"] = path.strip()
+    elif object_type == "custom_fields":
+        if data_type is None:
+            raise ValueError("data_type is required for custom_fields")
+        values["data_type"] = data_type
+        if extra_data is not None:
+            values["extra_data"] = extra_data
+    return values
+
+
+def _organization_update_values(
+    *,
+    object_type: str,
+    name: str | None,
+    path: str | None,
+    color: str | None,
+    parent_id: int | None,
+    clear_parent: bool,
+    match: str | None,
+    matching_algorithm: int | None,
+    is_insensitive: bool | None,
+    is_inbox_tag: bool | None,
+    data_type: str | None,
+    extra_data: dict[str, Any] | None,
+) -> JsonObject:
+    changes: JsonObject = {}
+    if name is not None:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("name must not be empty")
+        if len(clean_name) > 128:
+            raise ValueError("name must not exceed 128 characters")
+        changes["name"] = clean_name
+
+    if object_type in {"tags", "correspondents", "document_types", "storage_paths"}:
+        if match is not None:
+            changes["match"] = match
+        if matching_algorithm is not None:
+            _validate_matching_algorithm(matching_algorithm)
+            changes["matching_algorithm"] = matching_algorithm
+        if is_insensitive is not None:
+            changes["is_insensitive"] = is_insensitive
+    if object_type == "tags":
+        if color is not None:
+            _validate_color(color)
+            changes["color"] = color
+        if parent_id is not None and clear_parent:
+            raise ValueError("parent_id and clear_parent cannot be used together")
+        if parent_id is not None:
+            _validate_positive_ids([parent_id], "parent_id")
+            changes["parent"] = parent_id
+        elif clear_parent:
+            changes["parent"] = None
+        if is_inbox_tag is not None:
+            changes["is_inbox_tag"] = is_inbox_tag
+    elif object_type == "storage_paths" and path is not None:
+        if not path.strip():
+            raise ValueError("path must not be empty")
+        changes["path"] = path.strip()
+    elif object_type == "custom_fields":
+        if data_type is not None:
+            changes["data_type"] = data_type
+        if extra_data is not None:
+            changes["extra_data"] = extra_data
+    return changes
+
+
+def _validate_document_ids(document_ids: list[int]) -> None:
+    if not document_ids:
+        raise ValueError("document_ids must not be empty")
+    if len(document_ids) > 500:
+        raise ValueError("document_ids must contain at most 500 IDs")
+    _validate_positive_ids(document_ids, "document_ids")
+    if len(set(document_ids)) != len(document_ids):
+        raise ValueError("document_ids must not contain duplicates")
+
+
+def _validate_positive_ids(values: list[int], field_name: str) -> None:
+    if any(value < 1 for value in values):
+        raise ValueError(f"{field_name} must contain only positive IDs")
+
+
+def _validate_matching_algorithm(value: int) -> None:
+    if value not in range(7):
+        raise ValueError("matching_algorithm must be between 0 and 6")
+
+
+def _validate_color(value: str) -> None:
+    if len(value) != 7 or not value.startswith("#"):
+        raise ValueError("color must be a hex value like #a6cee3")
+    try:
+        int(value[1:], 16)
+    except ValueError as exc:
+        raise ValueError("color must be a hex value like #a6cee3") from exc
 
 
 if __name__ == "__main__":

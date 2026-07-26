@@ -14,8 +14,13 @@ MCP-fähige Clients über `stdio` mit deiner eigenen Paperless-ngx-Instanz.
   gespeicherte Ansichten vollständig und paginiert auflisten
 - Organisationsqualität über das gesamte Archiv zusammenfassen
 - Dokumente ohne ausgewählte Metadaten finden
+- Organisationsobjekte erstellen, umbenennen und konfigurieren
+- Korrespondenten, Dokumenttypen und Speicherpfade in Batches zuweisen
+- Tags additiv hinzufügen oder entfernen
+- Dokumente ausschließlich in den wiederherstellbaren Papierkorb verschieben
 - Ausgewählte Dokument-Metadaten aktualisieren
 - Schreibzugriffe standardmäßig blockieren
+- Endgültiges Löschen und Leeren des Papierkorbs technisch blockieren
 
 ## Voraussetzungen
 
@@ -93,6 +98,14 @@ Umgebungsvariablen an den Prozess übergeben.
 | `list_metadata` | Organisationsobjekte mit Details und Matching-Modus listen | Nein |
 | `get_organization_overview` | Nutzung, Dubletten und Zuordnungslücken zusammenfassen | Nein |
 | `find_documents_missing_metadata` | Dokumente ohne ausgewählte Metadaten finden | Nein |
+| `find_documents_by_metadata` | Dokumente zu einem Organisationsobjekt finden | Nein |
+| `create_organization_item` | Organisationsobjekte erstellen | Ja |
+| `update_organization_item` | Organisationsobjekte umbenennen oder konfigurieren | Ja |
+| `set_document_metadata_field` | Korrespondent, Typ oder Speicherpfad setzen/leeren | Ja |
+| `modify_document_tags` | Tags additiv hinzufügen oder entfernen | Ja |
+| `list_trashed_documents` | Inhalt des Papierkorbs auflisten | Nein |
+| `move_documents_to_trash` | Dokumente in den wiederherstellbaren Papierkorb verschieben | Ja |
+| `restore_documents_from_trash` | Dokumente aus dem Papierkorb wiederherstellen | Ja |
 | `update_document` | Titel, Datum, Zuordnungen, Tags oder ASN ändern | Optional |
 
 `update_document` funktioniert erst nach:
@@ -100,6 +113,17 @@ Umgebungsvariablen an den Prozess übergeben.
 ```dotenv
 PAPERLESS_READ_ONLY=false
 ```
+
+Auch bei deaktiviertem Read-only-Modus kann der MCP keine Dokumente endgültig
+löschen:
+
+- Es wird kein Dokument-Löschtool registriert.
+- HTTP-`DELETE` ist im API-Client vollständig gesperrt.
+- `trash empty` wird explizit blockiert.
+- Nicht freigegebene Bulk-Methoden wie `merge` oder `delete_pages` werden
+  abgewiesen.
+- `move_documents_to_trash` nutzt ausschließlich Paperless' wiederherstellbaren
+  Papierkorb.
 
 ### Organisationsprüfung mit AI
 
@@ -115,6 +139,15 @@ Für Detailprüfungen kann das Modell anschließend mit `list_metadata` durch di
 jeweilige Objektart paginieren. `find_documents_missing_metadata` liefert
 kompakte Dokument-Metadaten zu fehlenden Zuordnungen, ohne den OCR-Text zu
 übertragen.
+
+Empfohlener Ablauf:
+
+1. Analyse und Bereinigungsplan im Read-only-Modus erstellen.
+2. Vorgeschlagene Zielstruktur durch den Benutzer bestätigen lassen.
+3. `PAPERLESS_READ_ONLY=false` setzen und den MCP neu starten.
+4. Änderungen in kleinen Batches durchführen und jeweils kontrollieren.
+5. Nicht mehr benötigte Organisationsobjekte manuell in Paperless löschen; der
+   MCP bietet bewusst keine Löschtools an.
 
 ## Entwicklung
 
@@ -140,5 +173,7 @@ uv run ruff format --check . \
   ausschließlich `stdio`.
 - API-Token gehören nur in `.env` oder in die Prozessumgebung.
 - Schreibzugriffe sind standardmäßig deaktiviert.
+- Endgültiges Löschen von Dokumenten sowie das Leeren des Papierkorbs sind auch
+  bei aktivierten Schreibzugriffen nicht möglich.
 - Suchergebnisse enthalten keinen vollständigen OCR-Text; dieser wird nur über
   `get_document` und mit einem konfigurierbaren Größenlimit geliefert.

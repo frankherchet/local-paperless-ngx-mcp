@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
-from paperless_ngx_mcp.client import PaperlessApiError, PaperlessClient, ReadOnlyError
+from paperless_ngx_mcp.client import (
+    PaperlessApiError,
+    PaperlessClient,
+    PermanentDeletionDisabled,
+    ReadOnlyError,
+)
 from paperless_ngx_mcp.config import Settings
 
 
@@ -249,3 +256,102 @@ async def test_organization_overview_fetches_all_pages_and_assignment_counts() -
     assert (
         result["organization"]["tags"]["normalized_duplicate_groups"][0]["normalized_name"] == "tax"
     )
+
+
+@pytest.mark.asyncio
+async def test_permanent_document_deletion_is_blocked_before_network() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Deletion guard must run before the network request")
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(PermanentDeletionDisabled, match="HTTP DELETE is disabled"):
+            await client.request("DELETE", "api/documents/42/")
+
+        with pytest.raises(PermanentDeletionDisabled, match="Emptying trash"):
+            await client.request(
+                "POST",
+                "api/trash/",
+                json={"documents": [42], "action": "empty"},
+            )
+
+        with pytest.raises(PermanentDeletionDisabled, match="method is not allowed: merge"):
+            await client.request(
+                "POST",
+                "api/documents/bulk_edit/",
+                json={"documents": [42], "method": "merge", "parameters": {}},
+            )
+
+
+@pytest.mark.asyncio
+async def test_document_organization_writes_use_allowlisted_bulk_methods() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"result": "OK"})
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.set_document_metadata_field([10, 11], "correspondent", 7)
+        await client.modify_document_tags(
+            [10, 11],
+            add_tag_ids=[2],
+            remove_tag_ids=[3],
+        )
+        await client.move_documents_to_trash([12])
+
+    assert requests == [
+        {
+            "documents": [10, 11],
+            "method": "set_correspondent",
+            "parameters": {"correspondent": 7},
+        },
+        {
+            "documents": [10, 11],
+            "method": "modify_tags",
+            "parameters": {"add_tags": [2], "remove_tags": [3]},
+        },
+        {"documents": [12], "method": "delete", "parameters": {}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restore_is_the_only_allowed_trash_action() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/paperless/api/trash/"
+        assert json.loads(request.content) == {"documents": [42], "action": "restore"}
+        return httpx.Response(200, json={"result": "OK"})
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.restore_documents_from_trash([42])
+
+    assert result == {"result": "OK"}
+
+
+@pytest.mark.asyncio
+async def test_create_and_update_organization_items_use_no_delete_method() -> None:
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json={"id": 8, "name": "Finance"})
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.create_organization_item("tags", {"name": "Finance"})
+        await client.update_organization_item("tags", 8, {"name": "Finances"})
+
+    assert seen == [
+        ("POST", "/paperless/api/tags/", {"name": "Finance"}),
+        ("PATCH", "/paperless/api/tags/8/", {"name": "Finances"}),
+    ]
