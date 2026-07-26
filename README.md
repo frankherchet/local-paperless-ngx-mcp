@@ -10,7 +10,10 @@ MCP-fähige Clients über `stdio` mit deiner eigenen Paperless-ngx-Instanz.
 - Dokumente einfach, nach Titel, mit erweiterter Paperless-Syntax oder nach
   Ähnlichkeit suchen
 - Dokument-Metadaten und OCR-Text abrufen
-- Tags, Korrespondenten, Dokumenttypen und Speicherpfade auflisten
+- Tags, Korrespondenten, Dokumenttypen, Speicherpfade, Custom Fields und
+  gespeicherte Ansichten vollständig und paginiert auflisten
+- Organisationsqualität über das gesamte Archiv zusammenfassen
+- Dokumente ohne ausgewählte Metadaten finden
 - Ausgewählte Dokument-Metadaten aktualisieren
 - Schreibzugriffe standardmäßig blockieren
 
@@ -87,7 +90,9 @@ Umgebungsvariablen an den Prozess übergeben.
 | `paperless_status` | Verbindung, Versionen und Dokumentanzahl prüfen | Nein |
 | `search_documents` | Dokumente in vier Suchmodi finden | Nein |
 | `get_document` | Metadaten und begrenzten OCR-Text laden | Nein |
-| `list_metadata` | Tags, Korrespondenten, Typen oder Speicherpfade listen | Nein |
+| `list_metadata` | Organisationsobjekte mit Details und Matching-Modus listen | Nein |
+| `get_organization_overview` | Nutzung, Dubletten und Zuordnungslücken zusammenfassen | Nein |
+| `find_documents_missing_metadata` | Dokumente ohne ausgewählte Metadaten finden | Nein |
 | `update_document` | Titel, Datum, Zuordnungen, Tags oder ASN ändern | Optional |
 
 `update_document` funktioniert erst nach:
@@ -95,6 +100,21 @@ Umgebungsvariablen an den Prozess übergeben.
 ```dotenv
 PAPERLESS_READ_ONLY=false
 ```
+
+### Organisationsprüfung mit AI
+
+Die Analyse-Tools laden keine OCR-Inhalte. Ein sinnvoller Einstieg in einem
+MCP-fähigen Chat ist:
+
+> Prüfe mit `get_organization_overview`, ob meine Paperless-Organisation
+> schlüssig ist. Bewerte Tags, Korrespondenten, Dokumenttypen, Speicherpfade,
+> Custom Fields und Saved Views. Behandle ungenutzte Einträge nur als
+> Prüfkandidaten und schlage noch keine Löschungen vor.
+
+Für Detailprüfungen kann das Modell anschließend mit `list_metadata` durch die
+jeweilige Objektart paginieren. `find_documents_missing_metadata` liefert
+kompakte Dokument-Metadaten zu fehlenden Zuordnungen, ohne den OCR-Text zu
+übertragen.
 
 ## Entwicklung
 

@@ -28,8 +28,11 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
     server = FastMCP(
         name="Paperless-ngx",
         instructions=(
-            "Search and inspect the user's local Paperless-ngx archive. "
-            "Read tools are safe; document updates are disabled by default."
+            "Search and inspect the user's local Paperless-ngx archive and organization. "
+            "Use get_organization_overview before assessing tags, correspondents, document "
+            "types, storage paths, custom fields, or saved views. Treat unused entries as "
+            "review candidates, not deletion recommendations. Read tools are safe; document "
+            "updates are disabled by default."
         ),
         version=__version__,
     )
@@ -101,12 +104,23 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
 
     @server.tool(annotations=READ_ONLY, tags={"paperless", "metadata"})
     async def list_metadata(
-        object_type: Literal["tags", "correspondents", "document_types", "storage_paths"],
+        object_type: Literal[
+            "tags",
+            "correspondents",
+            "document_types",
+            "storage_paths",
+            "custom_fields",
+            "saved_views",
+        ],
         page: int = 1,
         page_size: int = 100,
         ordering: str = "name",
     ) -> JsonObject:
-        """List Paperless tags, correspondents, document types, or storage paths."""
+        """List organization records with full metadata and human-readable matching modes.
+
+        Supports tags, correspondents, document types, storage paths, custom fields,
+        and saved views. Use pagination to inspect large collections.
+        """
         if page < 1:
             raise ValueError("page must be at least 1")
         if not 1 <= page_size <= 100:
@@ -115,6 +129,52 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         async with use_client() as paperless:
             return await paperless.list_objects(
                 object_type,
+                page=page,
+                page_size=page_size,
+                ordering=ordering,
+            )
+
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "organization", "analysis"})
+    async def get_organization_overview(sample_size: int = 15) -> JsonObject:
+        """Summarize Paperless organization quality across the complete archive.
+
+        Returns usage counts, unused and single-document examples, normalized duplicate
+        name groups, matching-rule distribution, tag hierarchy statistics, custom-field
+        types, saved-view visibility, and counts of documents missing key assignments.
+        """
+        if not 1 <= sample_size <= 50:
+            raise ValueError("sample_size must be between 1 and 50")
+
+        async with use_client() as paperless:
+            return await paperless.get_organization_overview(sample_size=sample_size)
+
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "organization", "documents"})
+    async def find_documents_missing_metadata(
+        missing_field: Literal[
+            "correspondent",
+            "document_type",
+            "storage_path",
+            "tags",
+            "custom_fields",
+            "archive_serial_number",
+        ],
+        page: int = 1,
+        page_size: int = 20,
+        ordering: str = "-created",
+    ) -> JsonObject:
+        """Find documents that lack one selected organization field.
+
+        Returns compact document metadata without OCR content so an AI can inspect
+        organization gaps without loading sensitive document text.
+        """
+        if page < 1:
+            raise ValueError("page must be at least 1")
+        if not 1 <= page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
+
+        async with use_client() as paperless:
+            return await paperless.find_documents_missing_metadata(
+                missing_field,
                 page=page,
                 page_size=page_size,
                 ordering=ordering,
