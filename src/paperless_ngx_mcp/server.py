@@ -39,6 +39,12 @@ OBJECT_BULK_WRITE = ToolAnnotations(
     idempotentHint=True,
     openWorldHint=True,
 )
+WORKFLOW_DELETE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=True,
+    openWorldHint=True,
+)
 
 
 def create_server(client: PaperlessClient | None = None) -> FastMCP:
@@ -53,7 +59,8 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
             "organization items, show its reference-check preview, and obtain explicit user "
             "approval before repeating with dry_run=false. Read tools are safe; writes are "
             "disabled by default. Permanent document deletion is unavailable: the server never "
-            "issues HTTP DELETE and never empties Paperless trash."
+            "issues HTTP DELETE for documents and never empties Paperless trash. Workflow "
+            "deletion is available only through delete_workflow."
         ),
         version=__version__,
     )
@@ -161,6 +168,87 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
                 page_size=page_size,
                 ordering=ordering,
             )
+
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "workflows"})
+    async def list_workflows(page: int = 1, page_size: int = 100) -> JsonObject:
+        """List Paperless workflows through GET /api/workflows/."""
+        if page < 1:
+            raise ValueError("page must be at least 1")
+        if not 1 <= page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
+        async with use_client() as paperless:
+            return await paperless.list_workflows(page=page, page_size=page_size)
+
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "workflows"})
+    async def get_workflow(workflow_id: int) -> JsonObject:
+        """Retrieve one nested Paperless workflow through GET /api/workflows/{id}/."""
+        _validate_positive_ids([workflow_id], "workflow_id")
+        async with use_client() as paperless:
+            return await paperless.get_workflow(workflow_id)
+
+    @server.tool(annotations=CREATE, tags={"paperless", "workflows", "write"})
+    async def create_workflow(
+        name: str,
+        triggers: list[dict[str, Any]],
+        actions: list[dict[str, Any]],
+        order: int | None = None,
+        enabled: bool = True,
+    ) -> JsonObject:
+        """Create a nested Paperless workflow through POST /api/workflows/."""
+        values = _workflow_values(
+            name=name,
+            triggers=triggers,
+            actions=actions,
+            order=order,
+            enabled=enabled,
+        )
+        async with use_client() as paperless:
+            return await paperless.create_workflow(values)
+
+    @server.tool(annotations=WRITE, tags={"paperless", "workflows", "write"})
+    async def update_workflow(workflow_id: int, changes: dict[str, Any]) -> JsonObject:
+        """PATCH a workflow using Paperless fields name, order, enabled, triggers, and actions."""
+        _validate_positive_ids([workflow_id], "workflow_id")
+        _validate_workflow_changes(changes)
+        async with use_client() as paperless:
+            return await paperless.update_workflow(workflow_id, changes)
+
+    @server.tool(annotations=WORKFLOW_DELETE, tags={"paperless", "workflows", "delete"})
+    async def delete_workflow(workflow_id: int, dry_run: bool = True) -> JsonObject:
+        """Preview or delete one workflow; dry_run=true is the default.
+
+        This affects only the workflow object, never existing documents. Set dry_run=false
+        only after explicit user approval.
+        """
+        _validate_positive_ids([workflow_id], "workflow_id")
+        async with use_client() as paperless:
+            return await paperless.delete_workflow(workflow_id, dry_run=dry_run)
+
+    @server.tool(annotations=CREATE, tags={"paperless", "workflows", "intake", "write"})
+    async def configure_default_intake(
+        storage_path_id: int,
+        dry_run: bool = True,
+        enabled: bool = True,
+    ) -> JsonObject:
+        """Idempotently configure the MCP-owned workflow for all newly added documents.
+
+        Uses only the reserved default-intake workflow name. It never changes existing
+        documents, other workflows, or workflow ordering. The generated workflow runs after
+        other storage-path assignments by choosing an order above them.
+        """
+        _validate_positive_ids([storage_path_id], "storage_path_id")
+        async with use_client() as paperless:
+            return await paperless.configure_default_intake(
+                storage_path_id,
+                dry_run=dry_run,
+                enabled=enabled,
+            )
+
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "workflows", "intake"})
+    async def verify_default_intake() -> JsonObject:
+        """Read-only verification of the configured Standard-Eingang workflow."""
+        async with use_client() as paperless:
+            return await paperless.verify_default_intake()
 
     @server.tool(annotations=READ_ONLY, tags={"paperless", "organization", "analysis"})
     async def get_organization_overview(sample_size: int = 15) -> JsonObject:
@@ -680,6 +768,64 @@ def _validate_document_changes(changes: dict[str, Any]) -> None:
         or not 0 <= archive_serial_number <= 4_294_967_295
     ):
         raise ValueError("archive_serial_number must be between 0 and 4294967295 or null")
+
+
+def _workflow_values(
+    *,
+    name: str,
+    triggers: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+    order: int | None,
+    enabled: bool,
+) -> JsonObject:
+    _validate_workflow_name(name)
+    _validate_workflow_entries(triggers, "triggers")
+    _validate_workflow_entries(actions, "actions")
+    if order is not None and (not isinstance(order, int) or isinstance(order, bool)):
+        raise ValueError("order must be an integer or null")
+    return {
+        "name": name.strip(),
+        "triggers": triggers,
+        "actions": actions,
+        "enabled": enabled,
+        **({"order": order} if order is not None else {}),
+    }
+
+
+def _validate_workflow_changes(changes: dict[str, Any]) -> None:
+    allowed_fields = {"name", "order", "enabled", "triggers", "actions"}
+    if not changes:
+        raise ValueError("changes must not be empty")
+    unsupported = sorted(set(changes) - allowed_fields)
+    if unsupported:
+        raise ValueError(f"Unsupported workflow fields: {unsupported}")
+    if "name" in changes:
+        _validate_workflow_name(changes["name"])
+    if "order" in changes and (
+        not isinstance(changes["order"], int) or isinstance(changes["order"], bool)
+    ):
+        raise ValueError("order must be an integer")
+    if "enabled" in changes and not isinstance(changes["enabled"], bool):
+        raise ValueError("enabled must be a boolean")
+    for field in ("triggers", "actions"):
+        if field in changes:
+            _validate_workflow_entries(changes[field], field)
+
+
+def _validate_workflow_name(value: Any) -> None:
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 256:
+        raise ValueError("name must be a non-empty string with at most 256 characters")
+
+
+def _validate_workflow_entries(value: Any, field_name: str) -> None:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{field_name} must be a non-empty list")
+    if not all(isinstance(item, dict) for item in value):
+        raise ValueError(f"{field_name} must contain only objects")
+    for item in value:
+        workflow_type = item.get("type")
+        if not isinstance(workflow_type, int) or isinstance(workflow_type, bool):
+            raise ValueError(f"each {field_name} entry must have an integer type")
 
 
 def _validate_positive_ids(values: list[int], field_name: str) -> None:

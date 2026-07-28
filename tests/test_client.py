@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 import pytest
 
 from paperless_ngx_mcp.client import (
+    DEFAULT_INTAKE_WORKFLOW_NAME,
     PaperlessApiError,
     PaperlessClient,
     PermanentDeletionDisabled,
@@ -586,3 +588,198 @@ async def test_document_notes_maps_list_and_create_to_rest_subresource() -> None
             {"note": "Moved to trash; restore by removing tag X."},
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_crud_and_delete_dry_run_use_only_workflow_endpoints() -> None:
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        seen.append((request.method, request.url.path, body))
+        if request.method == "DELETE":
+            return httpx.Response(204)
+        return httpx.Response(
+            200,
+            json={"id": 9, "name": "Incoming", "triggers": [], "actions": []},
+        )
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.create_workflow(
+            {"name": "Incoming", "triggers": [{"type": 2}], "actions": [{"type": 1}]}
+        )
+        await client.update_workflow(9, {"enabled": False})
+        preview = await client.delete_workflow(9, dry_run=True)
+        deleted = await client.delete_workflow(9, dry_run=False)
+
+    assert preview["deleted"] is False
+    assert deleted["deleted"] is True
+    assert seen == [
+        (
+            "POST",
+            "/paperless/api/workflows/",
+            {"name": "Incoming", "triggers": [{"type": 2}], "actions": [{"type": 1}]},
+        ),
+        ("PATCH", "/paperless/api/workflows/9/", {"enabled": False}),
+        ("GET", "/paperless/api/workflows/9/", None),
+        ("GET", "/paperless/api/workflows/9/", None),
+        ("DELETE", "/paperless/api/workflows/9/", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_configure_default_intake_dry_run_creates_only_a_plan() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method != "GET":
+            raise AssertionError("Dry run must not create or update a workflow")
+        if request.url.path == "/paperless/api/storage_paths/":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [{"id": 18, "name": "00 Eingang/Zu prüfen"}],
+                },
+            )
+        assert request.url.path == "/paperless/api/workflows/"
+        return httpx.Response(
+            200,
+            json={
+                "count": 1,
+                "next": None,
+                "results": [
+                    {
+                        "id": 4,
+                        "name": "Existing storage assignment",
+                        "order": 1_500,
+                        "enabled": True,
+                        "triggers": [],
+                        "actions": [{"type": 1, "assign_storage_path": 2}],
+                    }
+                ],
+            },
+        )
+
+    async with PaperlessClient(
+        make_settings(),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.configure_default_intake(18, dry_run=True, enabled=True)
+
+    assert result["changed"] is True
+    assert result["workflow_id"] is None
+    assert result["planned_operation"] == "create"
+    assert result["planned_definition"]["order"] == 1_501
+    assert result["planned_definition"]["triggers"][0] == {
+        "type": 2,
+        "matching_algorithm": 0,
+        "match": "",
+        "is_insensitive": True,
+        "filter_path": None,
+        "filter_filename": None,
+        "filter_mailrule": None,
+    }
+    assert result["storage_path"] == {"id": 18, "name": "00 Eingang/Zu prüfen"}
+
+
+@pytest.mark.asyncio
+async def test_configure_default_intake_updates_only_reserved_workflow() -> None:
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        seen.append((request.method, request.url.path, body))
+        if request.url.path == "/paperless/api/storage_paths/":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [{"id": 18, "name": "00 Eingang/Zu prüfen"}],
+                },
+            )
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [
+                        {
+                            "id": 12,
+                            "name": DEFAULT_INTAKE_WORKFLOW_NAME,
+                            "order": 1,
+                            "enabled": False,
+                            "triggers": [{"type": 1}],
+                            "actions": [{"type": 1, "assign_storage_path": 2}],
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(200, json={"id": 12, "name": DEFAULT_INTAKE_WORKFLOW_NAME})
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.configure_default_intake(18, dry_run=False, enabled=True)
+
+    assert result["changed"] is True
+    assert result["workflow_id"] == 12
+    patch_request = next(request for request in seen if request[0] == "PATCH")
+    assert patch_request[1] == "/paperless/api/workflows/12/"
+    assert patch_request[2] == result["planned_definition"]
+
+
+@pytest.mark.asyncio
+async def test_verify_default_intake_detects_filters_and_reports_valid_definition() -> None:
+    workflow: dict[str, Any] = {
+        "id": 7,
+        "name": DEFAULT_INTAKE_WORKFLOW_NAME,
+        "order": 1000,
+        "enabled": True,
+        "triggers": [
+            {
+                "type": 2,
+                "matching_algorithm": 0,
+                "match": "",
+                "is_insensitive": True,
+                "filter_path": None,
+                "filter_filename": None,
+                "filter_mailrule": None,
+            }
+        ],
+        "actions": [{"type": 1, "assign_storage_path": 18}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/paperless/api/storage_paths/":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [{"id": 18, "name": "00 Eingang/Zu prüfen"}],
+                },
+            )
+        return httpx.Response(200, json={"count": 1, "next": None, "results": [workflow]})
+
+    async with PaperlessClient(
+        make_settings(),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.verify_default_intake()
+
+    assert result["valid"] is True
+    assert result["trigger"] == "document_added"
+    workflow["triggers"][0]["filter_path"] = "mail/*"
+    async with PaperlessClient(
+        make_settings(),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        invalid = await client.verify_default_intake()
+    assert invalid["valid"] is False
+    assert "trigger has filter filter_path" in invalid["problems"]

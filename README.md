@@ -96,6 +96,11 @@ Umgebungsvariablen an den Prozess übergeben.
 | `search_documents` | Dokumente in vier Suchmodi finden | Nein |
 | `get_document` | Dokument, OCR-Text und optional Datei-Prüfsummen laden | Nein |
 | `list_metadata` | Organisationsobjekte und Workflows listen | Nein |
+| `list_workflows` / `get_workflow` | Workflows paginieren oder einzeln lesen | Nein |
+| `create_workflow` / `update_workflow` | Verschachtelte Paperless-Workflows anlegen oder patchen | Ja |
+| `delete_workflow` | Workflow als Dry-run prüfen oder nach Freigabe löschen | Optional |
+| `configure_default_intake` | Standard-Eingang für ausschließlich neue Dokumente konfigurieren | Optional |
+| `verify_default_intake` | Standard-Eingang lesend prüfen | Nein |
 | `get_organization_overview` | Nutzung, Dubletten und Zuordnungslücken zusammenfassen | Nein |
 | `find_documents_missing_metadata` | Dokumente ohne ausgewählte Metadaten finden | Nein |
 | `find_documents_by_metadata` | Dokumente zu einem Organisationsobjekt finden | Nein |
@@ -126,6 +131,25 @@ löschen:
   abgewiesen.
 - `move_documents_to_trash` nutzt ausschließlich Paperless' wiederherstellbaren
   Papierkorb.
+
+Workflow-Objekte können ausschließlich über `delete_workflow` gelöscht werden;
+der Standard ist immer `dry_run=true`. Dies berührt weder bestehende Dokumente
+noch den Papierkorb.
+
+### Standard-Eingang für neue Dokumente
+
+`configure_default_intake(storage_path_id=18, dry_run=true)` plant einen eigenen
+Workflow mit dem festen Namen `Standard-Eingang – neue Dokumente`. Er greift auf
+jedes neu hinzugefügte Dokument (`Document Added`) zu und weist den gewählten
+Speicherpfad zu. Bestehende Dokumente werden nie verändert.
+
+Die Fachfunktion ist idempotent: Sie erstellt ausschließlich diesen einen
+Workflow oder aktualisiert ausschließlich diesen, falls seine Definition von der
+Soll-Konfiguration abweicht. Sie lässt alle anderen Workflows unverändert und
+wählt eine Reihenfolge nach vorhandenen Speicherpfad-Zuweisungen. Vor einer
+Änderung zuerst den Dry-run prüfen; danach mit `dry_run=false` erneut ausführen.
+`verify_default_intake()` bestätigt lesend Name, Aktivierung, Trigger,
+Speicherpfad und fehlende Filter.
 
 Unbenutzte Tags, Korrespondenten, Dokumenttypen und Speicherpfade können dagegen
 über das REST-orientierte Tool `bulk_edit_objects` gezielt entfernt werden. Das

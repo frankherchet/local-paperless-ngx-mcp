@@ -7,6 +7,7 @@ def test_settings_normalize_subpath_and_timeout() -> None:
             "PAPERLESS_URL": "https://example.test/paperless",
             "PAPERLESS_TOKEN": "secret",
             "PAPERLESS_REQUEST_TIMEOUT_MS": 2_500,
+            "PAPERLESS_READ_ONLY": True,
         }
     )
 

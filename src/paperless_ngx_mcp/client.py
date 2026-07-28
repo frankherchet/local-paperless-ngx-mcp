@@ -67,6 +67,9 @@ DOCUMENT_METADATA_FILTERS = {
     "custom_field": "custom_fields__id__in",
 }
 
+DEFAULT_INTAKE_WORKFLOW_NAME = "Standard-Eingang – neue Dokumente"  # noqa: RUF001
+DEFAULT_INTAKE_STORAGE_PATH_ID = 18
+
 
 class PaperlessError(RuntimeError):
     """Base error raised for Paperless API failures."""
@@ -130,6 +133,8 @@ class PaperlessClient:
         response = await self._client.request(method, path.lstrip("/"), params=params, json=json)
         if response.is_error:
             raise PaperlessApiError(response.status_code, self._error_message(response))
+        if response.status_code == 204:
+            return {"deleted": True}
 
         try:
             payload = response.json()
@@ -160,7 +165,10 @@ class PaperlessClient:
             "safety_policy": {
                 "permanent_document_deletion": False,
                 "empty_trash": False,
-                "http_delete_requests": False,
+                "http_delete_requests": {
+                    "documents": False,
+                    "workflow_objects": "delete_workflow only",
+                },
                 "move_to_trash": not self.settings.paperless_read_only,
                 "bulk_edit_objects": {
                     "enabled": not self.settings.paperless_read_only,
@@ -365,6 +373,163 @@ class PaperlessClient:
         if not changes:
             raise ValueError("At least one organization change must be provided")
         return await self.request("PATCH", f"api/{object_type}/{item_id}/", json=changes)
+
+    async def list_workflows(self, *, page: int, page_size: int) -> JsonObject:
+        """List Paperless workflows through GET /api/workflows/."""
+        return await self.list_objects("workflows", page=page, page_size=page_size, ordering="name")
+
+    async def get_workflow(self, workflow_id: int) -> JsonObject:
+        """Retrieve one workflow through GET /api/workflows/{id}/."""
+        return await self.request("GET", f"api/workflows/{workflow_id}/")
+
+    async def create_workflow(self, values: JsonObject) -> JsonObject:
+        """Create a nested Paperless workflow through POST /api/workflows/."""
+        self._ensure_write_enabled()
+        return await self.request("POST", "api/workflows/", json=values)
+
+    async def update_workflow(self, workflow_id: int, changes: JsonObject) -> JsonObject:
+        """PATCH one nested Paperless workflow."""
+        self._ensure_write_enabled()
+        if not changes:
+            raise ValueError("At least one workflow change must be provided")
+        return await self.request("PATCH", f"api/workflows/{workflow_id}/", json=changes)
+
+    async def delete_workflow(self, workflow_id: int, *, dry_run: bool) -> JsonObject:
+        """Delete one workflow only after an explicit non-dry-run request."""
+        workflow = await self.get_workflow(workflow_id)
+        result: JsonObject = {
+            "dry_run": dry_run,
+            "workflow_id": workflow_id,
+            "workflow": workflow,
+            "deleted": False,
+        }
+        if dry_run:
+            return result
+        self._ensure_write_enabled()
+        deletion = await self.request("DELETE", f"api/workflows/{workflow_id}/")
+        result["deleted"] = True
+        result["paperless_response"] = deletion
+        return result
+
+    async def configure_default_intake(
+        self,
+        storage_path_id: int,
+        *,
+        dry_run: bool,
+        enabled: bool,
+    ) -> JsonObject:
+        """Create or update only the MCP-owned default intake workflow."""
+        storage_paths, workflows = await asyncio.gather(
+            self._fetch_all_objects("storage_paths"),
+            self._fetch_all_objects("workflows"),
+        )
+        storage_path = self._find_object_by_id(storage_paths, storage_path_id, "storage path")
+        matching_workflows = [
+            workflow
+            for workflow in workflows
+            if workflow.get("name") == DEFAULT_INTAKE_WORKFLOW_NAME
+        ]
+        if len(matching_workflows) > 1:
+            raise ValueError(
+                "Multiple workflows use the reserved default intake name; refusing to modify any."
+            )
+
+        existing = matching_workflows[0] if matching_workflows else None
+        order = self._default_intake_order(workflows, existing)
+        definition = self._default_intake_definition(
+            storage_path_id,
+            order=order,
+            enabled=enabled,
+        )
+        changed = existing is None or not self._matches_default_intake(existing, definition)
+        workflow_id = existing.get("id") if existing is not None else None
+        result = self._default_intake_result(
+            changed=changed,
+            workflow_id=workflow_id if isinstance(workflow_id, int) else None,
+            enabled=enabled,
+            storage_path=storage_path,
+        )
+        result["dry_run"] = dry_run
+        result["planned_operation"] = (
+            "create" if existing is None else "update" if changed else "none"
+        )
+        result["planned_definition"] = definition
+        if dry_run or not changed:
+            return result
+
+        self._ensure_write_enabled()
+        if existing is None:
+            saved = await self.create_workflow(definition)
+        else:
+            existing_id = existing.get("id")
+            if not isinstance(existing_id, int):
+                raise PaperlessApiError(200, "Existing default intake workflow has no valid ID")
+            saved = await self.update_workflow(existing_id, definition)
+        saved_id = saved.get("id")
+        if not isinstance(saved_id, int):
+            raise PaperlessApiError(200, "Workflow create/update response has no valid ID")
+        result.update(
+            self._default_intake_result(
+                changed=True,
+                workflow_id=saved_id,
+                enabled=enabled,
+                storage_path=storage_path,
+            )
+        )
+        result["paperless_response"] = saved
+        return result
+
+    async def verify_default_intake(self) -> JsonObject:
+        """Read-only verification of the reserved default intake workflow."""
+        storage_paths, workflows = await asyncio.gather(
+            self._fetch_all_objects("storage_paths"),
+            self._fetch_all_objects("workflows"),
+        )
+        storage_path = self._find_object_by_id_or_none(
+            storage_paths,
+            DEFAULT_INTAKE_STORAGE_PATH_ID,
+        )
+        matching_workflows = [
+            workflow
+            for workflow in workflows
+            if workflow.get("name") == DEFAULT_INTAKE_WORKFLOW_NAME
+        ]
+        problems: list[str] = []
+        if len(matching_workflows) != 1:
+            problems.append(
+                f"expected exactly one workflow named {DEFAULT_INTAKE_WORKFLOW_NAME!r}, "
+                f"found {len(matching_workflows)}"
+            )
+            return {
+                "valid": False,
+                "workflow_count": len(matching_workflows),
+                "storage_path": storage_path,
+                "problems": problems,
+            }
+
+        workflow = matching_workflows[0]
+        if workflow.get("enabled") is not True:
+            problems.append("workflow is not enabled")
+        trigger_check = self._verify_default_intake_trigger(workflow.get("triggers"))
+        if trigger_check:
+            problems.extend(trigger_check)
+        action_check = self._verify_default_intake_action(workflow.get("actions"))
+        if action_check:
+            problems.extend(action_check)
+        if storage_path is None:
+            problems.append(
+                f"storage path {DEFAULT_INTAKE_STORAGE_PATH_ID} does not exist or is not visible"
+            )
+        return {
+            "valid": not problems,
+            "workflow_count": 1,
+            "workflow_id": workflow.get("id"),
+            "name": workflow.get("name"),
+            "enabled": workflow.get("enabled"),
+            "trigger": "document_added" if not trigger_check else None,
+            "storage_path": storage_path,
+            "problems": problems,
+        }
 
     async def _preview_organization_object_deletion(
         self,
@@ -661,6 +826,155 @@ class PaperlessClient:
             raise ValueError(f"Unsupported deletable organization object type: {object_type}")
 
     @staticmethod
+    def _find_object_by_id(
+        objects: list[JsonObject],
+        object_id: int,
+        object_label: str,
+    ) -> JsonObject:
+        result = PaperlessClient._find_object_by_id_or_none(objects, object_id)
+        if result is None:
+            raise ValueError(
+                f"{object_label.capitalize()} {object_id} does not exist or is not visible"
+            )
+        return result
+
+    @staticmethod
+    def _find_object_by_id_or_none(
+        objects: list[JsonObject],
+        object_id: int,
+    ) -> JsonObject | None:
+        return next(
+            (item for item in objects if item.get("id") == object_id),
+            None,
+        )
+
+    @staticmethod
+    def _default_intake_order(
+        workflows: list[JsonObject],
+        existing: JsonObject | None,
+    ) -> int:
+        highest_storage_assignment_order = 0
+        for workflow in workflows:
+            if workflow is existing:
+                continue
+            actions = workflow.get("actions")
+            if not isinstance(actions, list) or not any(
+                isinstance(action, dict) and action.get("assign_storage_path") is not None
+                for action in actions
+            ):
+                continue
+            order = workflow.get("order")
+            if isinstance(order, int) and not isinstance(order, bool):
+                highest_storage_assignment_order = max(highest_storage_assignment_order, order)
+        return max(1_000, highest_storage_assignment_order + 1)
+
+    @staticmethod
+    def _default_intake_definition(
+        storage_path_id: int,
+        *,
+        order: int,
+        enabled: bool,
+    ) -> JsonObject:
+        return {
+            "name": DEFAULT_INTAKE_WORKFLOW_NAME,
+            "enabled": enabled,
+            "order": order,
+            "triggers": [
+                {
+                    "type": 2,
+                    "matching_algorithm": 0,
+                    "match": "",
+                    "is_insensitive": True,
+                    "filter_path": None,
+                    "filter_filename": None,
+                    "filter_mailrule": None,
+                }
+            ],
+            "actions": [{"type": 1, "assign_storage_path": storage_path_id}],
+        }
+
+    @staticmethod
+    def _matches_default_intake(existing: JsonObject, definition: JsonObject) -> bool:
+        if any(existing.get(field) != definition[field] for field in ("name", "enabled", "order")):
+            return False
+        return not PaperlessClient._verify_default_intake_trigger(
+            existing.get("triggers")
+        ) and not PaperlessClient._verify_default_intake_action(
+            existing.get("actions"),
+            storage_path_id=definition["actions"][0]["assign_storage_path"],
+        )
+
+    @staticmethod
+    def _default_intake_result(
+        *,
+        changed: bool,
+        workflow_id: int | None,
+        enabled: bool,
+        storage_path: JsonObject,
+    ) -> JsonObject:
+        return {
+            "changed": changed,
+            "workflow_id": workflow_id,
+            "name": DEFAULT_INTAKE_WORKFLOW_NAME,
+            "enabled": enabled,
+            "trigger": "document_added",
+            "storage_path": {
+                "id": storage_path.get("id"),
+                "name": storage_path.get("name"),
+            },
+        }
+
+    @staticmethod
+    def _verify_default_intake_trigger(triggers: Any) -> list[str]:
+        if (
+            not isinstance(triggers, list)
+            or len(triggers) != 1
+            or not isinstance(triggers[0], dict)
+        ):
+            return ["expected exactly one Document Added trigger"]
+        trigger = triggers[0]
+        problems: list[str] = []
+        if trigger.get("type") != 2:
+            problems.append("trigger is not Document Added")
+        if trigger.get("matching_algorithm") != 0:
+            problems.append("trigger matching_algorithm is not none")
+        if trigger.get("match") != "":
+            problems.append("trigger match is not empty")
+        if trigger.get("is_insensitive") is not True:
+            problems.append("trigger is_insensitive is not true")
+        for key, value in trigger.items():
+            if key.startswith("filter_") and value is not None and value != "" and value != []:
+                problems.append(f"trigger has filter {key}")
+        return problems
+
+    @staticmethod
+    def _verify_default_intake_action(
+        actions: Any,
+        *,
+        storage_path_id: int = DEFAULT_INTAKE_STORAGE_PATH_ID,
+    ) -> list[str]:
+        if not isinstance(actions, list) or len(actions) != 1 or not isinstance(actions[0], dict):
+            return ["expected exactly one Assignment action"]
+        action = actions[0]
+        problems: list[str] = []
+        if action.get("type") != 1:
+            problems.append("action is not Assignment")
+        if action.get("assign_storage_path") != storage_path_id:
+            problems.append(f"action does not assign storage path {storage_path_id}")
+        for key, value in action.items():
+            if key in {"id", "type", "assign_storage_path"}:
+                continue
+            if (
+                value is not None
+                and value is not False
+                and value != ""
+                and value != []
+                and value != {}
+            ):
+                problems.append(f"action has additional setting {key}")
+        return problems
+
+    @staticmethod
     def _enforce_deletion_safety(
         method: str,
         path: str,
@@ -668,9 +982,17 @@ class PaperlessClient:
     ) -> None:
         normalized_path = path.lstrip("/")
         if method.upper() == "DELETE":
+            workflow_id = normalized_path.removeprefix("api/workflows/").removesuffix("/")
+            if (
+                normalized_path.startswith("api/workflows/")
+                and workflow_id.isdigit()
+                and int(workflow_id) > 0
+            ):
+                return
             raise PermanentDeletionDisabled(
                 "HTTP DELETE is disabled in this MCP server. "
-                "Documents can only be moved to Paperless trash."
+                "Documents can only be moved to Paperless trash; only workflow objects "
+                "may be deleted through delete_workflow."
             )
         if method.upper() == "POST" and normalized_path == "api/bulk_edit_objects/":
             object_type = json.get("object_type") if json is not None else None

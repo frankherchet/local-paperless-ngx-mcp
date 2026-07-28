@@ -13,6 +13,13 @@ async def test_server_exposes_expected_tools() -> None:
         "search_documents",
         "get_document",
         "list_metadata",
+        "list_workflows",
+        "get_workflow",
+        "create_workflow",
+        "update_workflow",
+        "delete_workflow",
+        "configure_default_intake",
+        "verify_default_intake",
         "get_organization_overview",
         "find_documents_missing_metadata",
         "find_documents_by_metadata",
@@ -61,6 +68,10 @@ async def test_server_exposes_expected_tools() -> None:
     assert object_bulk_tool.annotations is not None
     assert object_bulk_tool.annotations.readOnlyHint is False
     assert object_bulk_tool.annotations.destructiveHint is True
+
+    workflow_delete_tool = next(tool for tool in tools if tool.name == "delete_workflow")
+    assert workflow_delete_tool.annotations is not None
+    assert workflow_delete_tool.annotations.destructiveHint is True
 
 
 def test_document_patch_validation_supports_explicit_null_and_full_tag_list() -> None:
