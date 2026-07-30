@@ -710,12 +710,14 @@ wheels = [
 
 [[package]]
 name = "local-paperless-ngx-mcp"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
+    { name = "platformdirs" },
     { name = "pydantic-settings" },
+    { name = "python-dotenv" },
 ]
 
 [package.optional-dependencies]
@@ -731,9 +733,11 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=3.4.4,<4" },
     { name = "httpx", specifier = ">=0.28.1,<1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.17,<2" },
+    { name = "platformdirs", specifier = ">=4.0,<5" },
     { name = "pydantic-settings", specifier = ">=2.10,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.1,<2" },
+    { name = "python-dotenv", specifier = ">=1.0,<2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.12,<1" },
 ]
 provides-extras = ["dev"]

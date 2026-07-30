@@ -19,7 +19,7 @@ MCP-fähige Clients über `stdio` mit deiner eigenen Paperless-ngx-Instanz.
 - Tags additiv hinzufügen oder entfernen
 - Dokumente ausschließlich in den wiederherstellbaren Papierkorb verschieben
 - Ausgewählte Dokument-Metadaten aktualisieren
-- Schreibzugriffe standardmäßig blockieren
+- Einmalige, plattformübergreifende Ersteinrichtung über einen Terminal-Wizard
 - Endgültiges Löschen und Leeren des Papierkorbs technisch blockieren
 
 ## Voraussetzungen
@@ -30,63 +30,90 @@ MCP-fähige Clients über `stdio` mit deiner eigenen Paperless-ngx-Instanz.
 
 Das Token erzeugst du in Paperless-ngx unter **Profil → API-Token**.
 
-## Installation
+## Installation aus GitHub Releases
+
+Lade die aktuelle Wheel-Datei aus dem gewünschten
+[GitHub Release](https://github.com/frankherchet/local-paperless-ngx-mcp/releases)
+mit `uv` als lokales Tool. Ersetze die Versionsnummer durch die gewünschte
+Release-Version:
 
 ```bash
-git clone git@github.com:frankherchet/local-paperless-ngx-mcp.git
-cd local-paperless-ngx-mcp
-cp .env.example .env
-uv sync --extra dev
+uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.7.0/local_paperless_ngx_mcp-0.7.0-py3-none-any.whl"
+paperless-ngx-mcp setup
 ```
 
-Trage anschließend URL und Token in `.env` ein:
+Der Wizard fragt URL und API-Token verdeckt ab, prüft die Verbindung und speichert
+sie erst danach im benutzerspezifischen Konfigurationsverzeichnis. Er aktiviert
+Schreibtools standardmäßig; mit `paperless-ngx-mcp setup --read-only` bleibt der
+Server im reinen Lesemodus. Endgültiges Löschen von Dokumenten ist in beiden
+Modi nicht verfügbar.
 
-```dotenv
-PAPERLESS_URL=http://localhost:8000
-PAPERLESS_TOKEN=dein-api-token
-PAPERLESS_READ_ONLY=true
+Die gespeicherte JSON-Datei ist nicht verschlüsselt: Auf macOS und Linux erzwingt
+der Server Rechte `0600`, unter Windows liegt sie im persönlichen AppData-
+Verzeichnis. Zeige ihren Ort und die maskierte Konfiguration an mit:
+
+```bash
+paperless-ngx-mcp config show
 ```
 
-Die `.env`-Datei wird nicht von Git erfasst.
+Eine alte Konfiguration kann einmalig importiert werden, ohne die Quelldatei zu
+verändern:
+
+```bash
+paperless-ngx-mcp setup --from-env /absoluter/pfad/zu/.env
+```
+
+Zum Upgrade installiere die Wheel-Datei eines neueren Releases mit `--force`.
+Zum vollständigen Entfernen der gespeicherten Zugangsdaten verwende vor der
+Deinstallation `paperless-ngx-mcp config reset`.
 
 ## Starten
 
-Direkt über den Projekteinstieg:
+Nach dem Setup startet der installierte Befehl direkt einen stdio-MCP:
 
 ```bash
-uv run paperless-ngx-mcp
+paperless-ngx-mcp
 ```
 
-Oder über die FastMCP-Projektkonfiguration:
+Wird der Server interaktiv und ohne Konfiguration gestartet, öffnet er den
+Setup-Wizard und beendet sich danach. Ein MCP-Client wie Codex erhält ohne
+Konfiguration stattdessen einen klaren Fehlerhinweis auf den Setup-Befehl, weil
+stdin und stdout dort ausschließlich dem MCP-Protokoll gehören.
+
+## Entwicklung aus dem Repository
+
+Für Entwicklung statt einer Release-Installation:
 
 ```bash
+git clone https://github.com/frankherchet/local-paperless-ngx-mcp.git
+cd local-paperless-ngx-mcp
+uv sync --extra dev
+uv run paperless-ngx-mcp setup
 uv run fastmcp run fastmcp.json
 ```
 
 ## MCP-Client konfigurieren
 
-Für einen lokalen MCP-Client kannst du folgende `stdio`-Konfiguration verwenden.
-Ersetze `<REPO>` durch den absoluten Pfad zu diesem Repository.
+Für einen lokalen MCP-Client wie die Codex-App trägst du den von `uv` installierten
+Programmdateipfad ein. `uv tool dir --bin` zeigt das zugehörige Verzeichnis an.
 
 ```json
 {
   "mcpServers": {
     "paperless-ngx": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "<REPO>",
-        "run",
-        "paperless-ngx-mcp"
-      ]
+      "command": "<UV-TOOL-BIN>/paperless-ngx-mcp",
+      "args": []
     }
   }
 }
 ```
 
-FastMCP lädt die Zugangsdaten aus der `.env` im Projektverzeichnis. Alternativ
-kann der Client `PAPERLESS_URL` und `PAPERLESS_TOKEN` direkt als
-Umgebungsvariablen an den Prozess übergeben.
+Der Server lädt keine `.env`-Dateien automatisch. Für CI, Container oder
+headless Systeme können `PAPERLESS_URL` und `PAPERLESS_TOKEN` als explizite
+Prozessvariablen übergeben werden; sie müssen immer zusammen gesetzt sein und
+überschreiben die lokale Datei. `PAPERLESS_API_VERSION`,
+`PAPERLESS_REQUEST_TIMEOUT_MS` und `PAPERLESS_READ_ONLY` können ebenfalls
+explizit überschrieben werden.
 
 ## Verfügbare Tools
 
@@ -115,11 +142,10 @@ Umgebungsvariablen an den Prozess übergeben.
 | `update_document` | Dokumentfelder per REST-PATCH ändern oder leeren | Optional |
 | `document_notes` | Dokumentnotizen auflisten oder anlegen | Optional |
 
-`update_document` funktioniert erst nach:
-
-```dotenv
-PAPERLESS_READ_ONLY=false
-```
+`update_document` und weitere Schreibtools sind nur verfügbar, wenn
+`PAPERLESS_READ_ONLY=false` konfiguriert ist. Der Setup-Wizard setzt dies
+standardmäßig; mit `setup --read-only` oder einer Prozessvariable kann der
+Lesemodus jederzeit erzwungen werden.
 
 Auch bei deaktiviertem Read-only-Modus kann der MCP keine Dokumente endgültig
 löschen:
@@ -201,7 +227,8 @@ Empfohlener Ablauf:
 
 1. Analyse und Bereinigungsplan im Read-only-Modus erstellen.
 2. Vorgeschlagene Zielstruktur durch den Benutzer bestätigen lassen.
-3. `PAPERLESS_READ_ONLY=false` setzen und den MCP neu starten.
+3. Schreibmodus bei Bedarf mit `paperless-ngx-mcp setup` aktivieren und den MCP
+   neu starten.
 4. Änderungen in kleinen Batches durchführen und jeweils kontrollieren.
 5. Unbenutzte Organisationsobjekte mit `bulk_edit_objects` und `dry_run=true`
    prüfen, die Vorschau bestätigen lassen und denselben Aufruf anschließend mit
@@ -229,9 +256,14 @@ uv run ruff format --check . \
 
 - Der Server lauscht standardmäßig nicht auf einem Netzwerkport, sondern nutzt
   ausschließlich `stdio`.
-- API-Token gehören nur in `.env` oder in die Prozessumgebung.
-- Schreibzugriffe sind standardmäßig deaktiviert.
+- API-Token liegen in der zugriffsgeschützten Benutzerkonfiguration oder in
+  ausdrücklich gesetzten Prozessvariablen – nie automatisch in `.env`.
+- Der Wizard aktiviert Schreibzugriffe standardmäßig; mit `setup --read-only`
+  bleibt der Server im sicheren Lesemodus.
 - Endgültiges Löschen von Dokumenten sowie das Leeren des Papierkorbs sind auch
   bei aktivierten Schreibzugriffen nicht möglich.
 - Suchergebnisse enthalten keinen vollständigen OCR-Text; dieser wird nur über
   `get_document` und mit einem konfigurierbaren Größenlimit geliefert.
+
+Weitere Hinweise zur Tokenablage und zur Meldung von Sicherheitslücken stehen in
+[SECURITY.md](SECURITY.md).

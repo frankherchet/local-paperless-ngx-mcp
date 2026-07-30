@@ -588,8 +588,10 @@ mcp = create_server()
 
 
 def main() -> None:
-    """Run the local MCP server over stdio."""
-    mcp.run(transport="stdio", show_banner=False)
+    """Run the public CLI entry point (kept for backwards-compatible imports)."""
+    from paperless_ngx_mcp.cli import main as cli_main
+
+    cli_main()
 
 
 def _organization_create_values(
