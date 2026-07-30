@@ -61,6 +61,12 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("serve", help="Run the MCP server over stdio")
 
     setup = subparsers.add_parser("setup", help="Configure Paperless access interactively")
+    setup.add_argument(
+        "--api-version",
+        type=int,
+        metavar="VERSION",
+        help="Persist the Paperless REST API version (default: 10 for new configurations)",
+    )
     setup.add_argument("--read-only", action="store_true", help="Disable all Paperless write tools")
     setup.add_argument(
         "--from-env",
@@ -92,7 +98,7 @@ def _run_server() -> None:
             and sys.stdout.isatty()
         ):
             print("Paperless is not configured yet. Starting setup…")
-            _run_setup(argparse.Namespace(read_only=False, from_env=None))
+            _run_setup(argparse.Namespace(api_version=None, read_only=False, from_env=None))
             print("Setup completed. Start the server again from your MCP client.")
             return
         raise
@@ -130,6 +136,8 @@ def _run_setup(
     elif not existing_token:
         raise ConfigurationError("Paperless API token is required")
 
+    if args.api_version is not None:
+        values["PAPERLESS_API_VERSION"] = args.api_version
     if args.read_only:
         values["PAPERLESS_READ_ONLY"] = True
     elif "PAPERLESS_READ_ONLY" not in values:

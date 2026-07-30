@@ -13,8 +13,10 @@ from paperless_ngx_mcp import __version__
 from paperless_ngx_mcp.config import ConfigurationError, Settings, load_config_values
 
 
-def _setup_args(*, from_env: Path | None = None, read_only: bool = False) -> argparse.Namespace:
-    return argparse.Namespace(from_env=from_env, read_only=read_only)
+def _setup_args(
+    *, from_env: Path | None = None, read_only: bool = False, api_version: int | None = None
+) -> argparse.Namespace:
+    return argparse.Namespace(api_version=api_version, from_env=from_env, read_only=read_only)
 
 
 def test_setup_verifies_before_storing_and_hides_token(
@@ -92,6 +94,22 @@ def test_setup_can_explicitly_import_dotenv_and_preserve_read_only(
 
     assert load_config_values(target)["PAPERLESS_READ_ONLY"] is True
     assert dotenv.exists()
+
+
+def test_setup_persists_explicit_api_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "config.json"
+    monkeypatch.setattr(config, "config_path", lambda: target)
+
+    cli._run_setup(
+        _setup_args(api_version=10),
+        input_func=lambda _: "https://v10.example",
+        secret_input=lambda _: "v10-token",
+        verify=lambda _: {"paperless_version": "2.0"},
+    )
+
+    assert load_config_values(target)["PAPERLESS_API_VERSION"] == 10
 
 
 def test_main_returns_non_interactive_setup_hint_when_configuration_is_missing(

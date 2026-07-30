@@ -48,6 +48,13 @@ Schreibtools standardmäßig; mit `paperless-ngx-mcp setup --read-only` bleibt d
 Server im reinen Lesemodus. Endgültiges Löschen von Dokumenten ist in beiden
 Modi nicht verfügbar.
 
+Für eine abweichende Paperless-REST-Version kann sie dauerhaft beim Setup
+gespeichert werden, zum Beispiel für API v10:
+
+```bash
+paperless-ngx-mcp setup --api-version 10
+```
+
 Die gespeicherte JSON-Datei ist nicht verschlüsselt: Auf macOS und Linux erzwingt
 der Server Rechte `0600`, unter Windows liegt sie im persönlichen AppData-
 Verzeichnis. Zeige ihren Ort und die maskierte Konfiguration an mit:
