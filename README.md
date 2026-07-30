@@ -1,95 +1,91 @@
 # Local Paperless-ngx MCP
 
-Ein lokaler [FastMCP](https://gofastmcp.com/)-Server für die
-[Paperless-ngx REST API](https://docs.paperless-ngx.com/api/). Er verbindet
-MCP-fähige Clients über `stdio` mit deiner eigenen Paperless-ngx-Instanz.
+A local [FastMCP](https://gofastmcp.com/) server for the
+[Paperless-ngx REST API](https://docs.paperless-ngx.com/api/). It connects
+MCP-capable clients to your own Paperless-ngx instance over `stdio`.
 
-## Funktionen
+## Features
 
-- Verbindung und API-Version prüfen
-- Dokumente einfach, nach Titel, mit erweiterter Paperless-Syntax oder nach
-  Ähnlichkeit suchen
-- Dokument-Metadaten und OCR-Text abrufen
-- Tags, Korrespondenten, Dokumenttypen, Speicherpfade, Custom Fields und
-  gespeicherte Ansichten vollständig und paginiert auflisten
-- Organisationsqualität über das gesamte Archiv zusammenfassen
-- Dokumente ohne ausgewählte Metadaten finden
-- Organisationsobjekte erstellen, umbenennen und konfigurieren
-- Korrespondenten, Dokumenttypen und Speicherpfade in Batches zuweisen
-- Tags additiv hinzufügen oder entfernen
-- Dokumente ausschließlich in den wiederherstellbaren Papierkorb verschieben
-- Ausgewählte Dokument-Metadaten aktualisieren
-- Einmalige, plattformübergreifende Ersteinrichtung über einen Terminal-Wizard
-- Endgültiges Löschen und Leeren des Papierkorbs technisch blockieren
+- Check connectivity, Paperless version, and API version.
+- Search documents by simple query, title, Paperless advanced syntax, or
+  similarity.
+- Retrieve document metadata, OCR text, and optional file checksums.
+- List tags, correspondents, document types, storage paths, custom fields,
+  saved views, and workflows with pagination.
+- Assess organization quality across the archive and find missing metadata.
+- Create, rename, and configure organization objects.
+- Assign correspondents, document types, and storage paths in batches.
+- Add or remove tags without replacing unrelated tags.
+- Move documents only to Paperless' recoverable trash and restore them.
+- Update selected document metadata and create document notes.
+- Configure and verify a default intake workflow for new documents.
+- Block permanent document deletion and trash-emptying at the API-client level.
 
-## Voraussetzungen
+## Requirements
 
-- Python 3.11 oder neuer
+- Python 3.11 or later
 - [`uv`](https://docs.astral.sh/uv/)
-- Eine erreichbare Paperless-ngx-Instanz mit API-Token
+- A reachable Paperless-ngx instance with an API token
 
-Das Token erzeugst du in Paperless-ngx unter **Profil → API-Token**.
+Create the token in Paperless-ngx under **Profile → API Token**.
 
-## Installation aus GitHub Releases
+## Install from GitHub Releases
 
-Lade die aktuelle Wheel-Datei aus dem gewünschten
-[GitHub Release](https://github.com/frankherchet/local-paperless-ngx-mcp/releases)
-mit `uv` als lokales Tool. Ersetze die Versionsnummer durch die gewünschte
-Release-Version:
+Install the desired release wheel as a local `uv` tool. Replace the version in
+the URL when installing a newer release:
 
 ```bash
-uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.7.0/local_paperless_ngx_mcp-0.7.0-py3-none-any.whl"
+uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.8.1/local_paperless_ngx_mcp-0.8.1-py3-none-any.whl"
 paperless-ngx-mcp setup
 ```
 
-Der Wizard fragt URL und API-Token verdeckt ab, prüft die Verbindung und speichert
-sie erst danach im benutzerspezifischen Konfigurationsverzeichnis. Er aktiviert
-Schreibtools standardmäßig; mit `paperless-ngx-mcp setup --read-only` bleibt der
-Server im reinen Lesemodus. Endgültiges Löschen von Dokumenten ist in beiden
-Modi nicht verfügbar.
+The setup wizard asks for the URL and API token without echoing the token,
+validates the connection, and saves the configuration only after validation.
+Write tools are enabled by default; use `paperless-ngx-mcp setup --read-only`
+to keep the server in read-only mode. Permanent document deletion is unavailable
+in either mode.
 
-Für eine abweichende Paperless-REST-Version kann sie dauerhaft beim Setup
-gespeichert werden, zum Beispiel für API v10:
+New configurations use REST API v10 by default. Persist another version during
+setup when needed:
 
 ```bash
 paperless-ngx-mcp setup --api-version 10
 ```
 
-Die gespeicherte JSON-Datei ist nicht verschlüsselt: Auf macOS und Linux erzwingt
-der Server Rechte `0600`, unter Windows liegt sie im persönlichen AppData-
-Verzeichnis. Zeige ihren Ort und die maskierte Konfiguration an mit:
+The local JSON configuration file is not encrypted. On macOS and Linux the
+server enforces `0600` file permissions; on Windows it is placed in the user's
+AppData directory. Show its location and a masked configuration with:
 
 ```bash
 paperless-ngx-mcp config show
 ```
 
-Eine alte Konfiguration kann einmalig importiert werden, ohne die Quelldatei zu
-verändern:
+To migrate an existing configuration once without changing the source file:
 
 ```bash
-paperless-ngx-mcp setup --from-env /absoluter/pfad/zu/.env
+paperless-ngx-mcp setup --from-env /absolute/path/to/.env
 ```
 
-Zum Upgrade installiere die Wheel-Datei eines neueren Releases mit `--force`.
-Zum vollständigen Entfernen der gespeicherten Zugangsdaten verwende vor der
-Deinstallation `paperless-ngx-mcp config reset`.
+To upgrade, install a newer release wheel with `--force`. Before uninstalling,
+run `paperless-ngx-mcp config reset` if you also want to remove local
+credentials.
 
-## Starten
+## Run the server
 
-Nach dem Setup startet der installierte Befehl direkt einen stdio-MCP:
+After setup, start a stdio MCP server with:
 
 ```bash
 paperless-ngx-mcp
 ```
 
-Wird der Server interaktiv und ohne Konfiguration gestartet, öffnet er den
-Setup-Wizard und beendet sich danach. Ein MCP-Client wie Codex erhält ohne
-Konfiguration stattdessen einen klaren Fehlerhinweis auf den Setup-Befehl, weil
-stdin und stdout dort ausschließlich dem MCP-Protokoll gehören.
+When launched interactively without configuration, the command opens the setup
+wizard and exits afterward. When a non-interactive MCP client such as Codex
+starts it without configuration, it exits with a clear setup hint instead:
+stdin and stdout are reserved for the MCP protocol.
 
-## Entwicklung aus dem Repository
+## Develop from the repository
 
-Für Entwicklung statt einer Release-Installation:
+For development rather than installing a release:
 
 ```bash
 git clone https://github.com/frankherchet/local-paperless-ngx-mcp.git
@@ -99,10 +95,10 @@ uv run paperless-ngx-mcp setup
 uv run fastmcp run fastmcp.json
 ```
 
-## MCP-Client konfigurieren
+## Configure an MCP client
 
-Für einen lokalen MCP-Client wie die Codex-App trägst du den von `uv` installierten
-Programmdateipfad ein. `uv tool dir --bin` zeigt das zugehörige Verzeichnis an.
+For a local MCP client such as the Codex app, configure the executable installed
+by `uv`. `uv tool dir --bin` prints the parent directory.
 
 ```json
 {
@@ -115,133 +111,125 @@ Programmdateipfad ein. `uv tool dir --bin` zeigt das zugehörige Verzeichnis an.
 }
 ```
 
-Der Server lädt keine `.env`-Dateien automatisch. Für CI, Container oder
-headless Systeme können `PAPERLESS_URL` und `PAPERLESS_TOKEN` als explizite
-Prozessvariablen übergeben werden; sie müssen immer zusammen gesetzt sein und
-überschreiben die lokale Datei. `PAPERLESS_API_VERSION`,
-`PAPERLESS_REQUEST_TIMEOUT_MS` und `PAPERLESS_READ_ONLY` können ebenfalls
-explizit überschrieben werden.
+The server never reads `.env` files automatically. For CI, containers, or
+headless environments, pass `PAPERLESS_URL` and `PAPERLESS_TOKEN` explicitly
+as process environment variables. They must always be supplied together and
+override the local configuration file. `PAPERLESS_API_VERSION`,
+`PAPERLESS_REQUEST_TIMEOUT_MS`, and `PAPERLESS_READ_ONLY` can also be overridden
+explicitly.
 
-## Verfügbare Tools
+## Available tools
 
-| Tool | Zweck | Schreibzugriff |
+| Tool | Purpose | Writes to Paperless |
 | --- | --- | --- |
-| `paperless_status` | Verbindung, Versionen und Dokumentanzahl prüfen | Nein |
-| `search_documents` | Dokumente in vier Suchmodi finden | Nein |
-| `get_document` | Dokument, OCR-Text und optional Datei-Prüfsummen laden | Nein |
-| `list_metadata` | Organisationsobjekte und Workflows listen | Nein |
-| `list_workflows` / `get_workflow` | Workflows paginieren oder einzeln lesen | Nein |
-| `create_workflow` / `update_workflow` | Verschachtelte Paperless-Workflows anlegen oder patchen | Ja |
-| `delete_workflow` | Workflow als Dry-run prüfen oder nach Freigabe löschen | Optional |
-| `configure_default_intake` | Standard-Eingang für ausschließlich neue Dokumente konfigurieren | Optional |
-| `verify_default_intake` | Standard-Eingang lesend prüfen | Nein |
-| `get_organization_overview` | Nutzung, Dubletten und Zuordnungslücken zusammenfassen | Nein |
-| `find_documents_missing_metadata` | Dokumente ohne ausgewählte Metadaten finden | Nein |
-| `find_documents_by_metadata` | Dokumente zu einem Organisationsobjekt finden | Nein |
-| `create_organization_item` | Organisationsobjekte erstellen | Ja |
-| `update_organization_item` | Organisationsobjekte umbenennen oder konfigurieren | Ja |
-| `bulk_edit_objects` | `/api/bulk_edit_objects/` mit Vorschau und Sicherheitsprüfung | Optional |
-| `set_document_metadata_field` | Korrespondent, Typ oder Speicherpfad setzen/leeren | Ja |
-| `modify_document_tags` | Tags additiv hinzufügen oder entfernen | Ja |
-| `list_trashed_documents` | Inhalt des Papierkorbs auflisten | Nein |
-| `move_documents_to_trash` | Dokumente in den wiederherstellbaren Papierkorb verschieben | Ja |
-| `restore_documents_from_trash` | Dokumente aus dem Papierkorb wiederherstellen | Ja |
-| `update_document` | Dokumentfelder per REST-PATCH ändern oder leeren | Optional |
-| `document_notes` | Dokumentnotizen auflisten oder anlegen | Optional |
+| `paperless_status` | Check connectivity, versions, and document count | No |
+| `search_documents` | Find documents in four search modes | No |
+| `get_document` | Retrieve document metadata, OCR text, and optional file checksums | No |
+| `list_metadata` | List organization objects and workflows | No |
+| `list_workflows` / `get_workflow` | Paginate or retrieve nested workflows | No |
+| `create_workflow` / `update_workflow` | Create or patch nested Paperless workflows | Yes |
+| `delete_workflow` | Preview or, after approval, delete a workflow | Optional |
+| `configure_default_intake` | Configure the default intake for new documents only | Optional |
+| `verify_default_intake` | Validate the default intake configuration without writing | No |
+| `get_organization_overview` | Summarize usage, duplicates, and metadata gaps | No |
+| `find_documents_missing_metadata` | Find documents missing selected metadata | No |
+| `find_documents_by_metadata` | Find documents linked to an organization object | No |
+| `create_organization_item` | Create an organization object | Yes |
+| `update_organization_item` | Rename or configure an organization object | Yes |
+| `bulk_edit_objects` | Use `/api/bulk_edit_objects/` with a preview and safety checks | Optional |
+| `set_document_metadata_field` | Set or clear a correspondent, type, or storage path | Yes |
+| `modify_document_tags` | Add or remove tags | Yes |
+| `list_trashed_documents` | List recoverable trash contents | No |
+| `move_documents_to_trash` | Move documents to recoverable trash | Yes |
+| `restore_documents_from_trash` | Restore documents from trash | Yes |
+| `update_document` | Change supported document fields through REST PATCH | Optional |
+| `document_notes` | List or create document notes | Optional |
 
-`update_document` und weitere Schreibtools sind nur verfügbar, wenn
-`PAPERLESS_READ_ONLY=false` konfiguriert ist. Der Setup-Wizard setzt dies
-standardmäßig; mit `setup --read-only` oder einer Prozessvariable kann der
-Lesemodus jederzeit erzwungen werden.
+`update_document` and other write tools require
+`PAPERLESS_READ_ONLY=false`. The setup wizard enables this by default; use
+`setup --read-only` or a process environment override to force read-only mode.
 
-Auch bei deaktiviertem Read-only-Modus kann der MCP keine Dokumente endgültig
-löschen:
+Even when writes are enabled, the MCP cannot permanently delete documents:
 
-- Es wird kein Dokument-Löschtool registriert.
-- HTTP-`DELETE` ist im API-Client vollständig gesperrt.
-- `trash empty` wird explizit blockiert.
-- Nicht freigegebene Bulk-Methoden wie `merge` oder `delete_pages` werden
-  abgewiesen.
-- `move_documents_to_trash` nutzt ausschließlich Paperless' wiederherstellbaren
-  Papierkorb.
+- It does not register a document-delete tool.
+- The API client blocks HTTP `DELETE` requests for documents.
+- Emptying Paperless trash is explicitly blocked.
+- Unsupported bulk methods such as `merge` and `delete_pages` are rejected.
+- `move_documents_to_trash` uses only Paperless' recoverable trash.
 
-Workflow-Objekte können ausschließlich über `delete_workflow` gelöscht werden;
-der Standard ist immer `dry_run=true`. Dies berührt weder bestehende Dokumente
-noch den Papierkorb.
+Workflow objects can be deleted only through `delete_workflow`, which defaults
+to `dry_run=true`. This never affects existing documents or trash.
 
-### Standard-Eingang für neue Dokumente
+### Default intake for new documents
 
-`configure_default_intake(storage_path_id=18, dry_run=true)` plant einen eigenen
-Workflow mit dem festen Namen `Standard-Eingang – neue Dokumente`. Er greift auf
-jedes neu hinzugefügte Dokument (`Document Added`) zu und weist den gewählten
-Speicherpfad zu. Bestehende Dokumente werden nie verändert.
+`configure_default_intake(storage_path_id=18, dry_run=true)` plans an
+MCP-owned workflow for all newly added documents. The workflow deliberately has
+the stable name `Standard-Eingang – neue Dokumente`; keeping this existing name
+prevents upgrades from creating a second intake workflow. It uses the
+`Document Added` trigger and assigns the selected storage path. Existing
+documents are never changed.
 
-Die Fachfunktion ist idempotent: Sie erstellt ausschließlich diesen einen
-Workflow oder aktualisiert ausschließlich diesen, falls seine Definition von der
-Soll-Konfiguration abweicht. Sie lässt alle anderen Workflows unverändert und
-wählt eine Reihenfolge nach vorhandenen Speicherpfad-Zuweisungen. Vor einer
-Änderung zuerst den Dry-run prüfen; danach mit `dry_run=false` erneut ausführen.
-`verify_default_intake()` bestätigt lesend Name, Aktivierung, Trigger,
-Speicherpfad und fehlende Filter.
+The function is idempotent: it creates only this workflow, or updates only this
+workflow when its definition differs from the intended configuration. It leaves
+all other workflows unchanged and orders itself after existing storage-path
+assignments. Inspect the dry run first, then repeat with `dry_run=false` to
+apply it. `verify_default_intake()` checks the name, enabled state, trigger,
+storage path, and absence of filters without writing.
 
-Unbenutzte Tags, Korrespondenten, Dokumenttypen und Speicherpfade können dagegen
-über das REST-orientierte Tool `bulk_edit_objects` gezielt entfernt werden. Das
-Tool bildet `POST /api/bulk_edit_objects/` mit den API-Feldern `objects`,
-`object_type` und `operation` ab. Sicherheitsvorkehrungen werden zentral
-angewendet:
+### Safe cleanup of organization objects
 
-1. Der Standard `dry_run=true` prüft `document_count`, Workflow-Trigger und
-   Workflow-Aktionen; bei Tags werden zusätzlich untergeordnete Tags als
-   Referenzen berücksichtigt.
-2. Das Ergebnis wird dem Benutzer gezeigt und die ausdrückliche Freigabe
-   eingeholt.
-3. Derselbe Aufruf mit `dry_run=false` wiederholt die Referenzprüfung unmittelbar
-   vor dem Löschen und bricht die gesamte Anfrage ab, wenn ein Eintrag verwendet
-   wird oder nicht mehr existiert.
+Unused tags, correspondents, document types, and storage paths can be removed
+with the REST-oriented `bulk_edit_objects` tool. It represents
+`POST /api/bulk_edit_objects/` using the API fields `objects`, `object_type`,
+and `operation`, and applies central safety checks:
 
-Das Bulk-Tool ist im MCP als destruktiv markiert. Für `operation=delete` sind nur
-die vier genannten Organisationstypen freigegeben. Dokumente, Custom Fields,
-Saved Views und andere Objekte sind darüber nicht löschbar.
+1. The default `dry_run=true` checks `document_count`, workflow triggers, and
+   workflow actions. For tags, child tags are also treated as references.
+2. Show the preview to the user and obtain explicit approval.
+3. Repeat the same request with `dry_run=false`; reference checks run again
+   immediately before deletion, and the complete request fails if an entry is
+   used or no longer exists.
 
-`list_metadata(object_type="workflows")` liefert die vollständigen Trigger und
-Aktionen für eine manuelle Prüfung. Die Löschsperre führt dieselbe
-Workflow-Referenzprüfung serverseitig erneut aus. Wenn Workflows nicht gelesen
-werden können, schlägt die Prüfung fehl und es wird nichts gelöscht.
+The MCP marks this bulk tool as destructive. For `operation=delete`, it allows
+only the four organization-object types above. It cannot delete documents,
+custom fields, saved views, or other object types.
 
-Für eine sichere Dublettenprüfung kann `get_document` mit
-`include_file_metadata=true` aufgerufen werden. Die Antwort enthält dann unter
-`file_metadata` insbesondere `original_checksum` und `archive_checksum`.
-`document_notes` bildet die GET- und POST-Operationen von
-`/api/documents/{id}/notes/` ab; das Löschen von Notizen wird wegen der globalen
-HTTP-`DELETE`-Sperre nicht angeboten.
+`list_metadata(object_type="workflows")` returns full triggers and actions for
+manual review. The deletion guard repeats the same workflow-reference checks on
+the server. If workflows cannot be read, the check fails and nothing is deleted.
 
-### Organisationsprüfung mit AI
+For safe duplicate checking, call `get_document` with
+`include_file_metadata=true`. Its `file_metadata` response includes
+`original_checksum` and `archive_checksum`. `document_notes` represents GET and
+POST operations for `/api/documents/{id}/notes/`; deleting notes is unavailable
+because of the global HTTP-`DELETE` safeguard.
 
-Die Analyse-Tools laden keine OCR-Inhalte. Ein sinnvoller Einstieg in einem
-MCP-fähigen Chat ist:
+### AI-assisted organization review
 
-> Prüfe mit `get_organization_overview`, ob meine Paperless-Organisation
-> schlüssig ist. Bewerte Tags, Korrespondenten, Dokumenttypen, Speicherpfade,
-> Custom Fields und Saved Views. Behandle ungenutzte Einträge nur als
-> Prüfkandidaten und schlage noch keine Löschungen vor.
+The analysis tools do not load OCR content. A useful first prompt in an
+MCP-capable chat is:
 
-Für Detailprüfungen kann das Modell anschließend mit `list_metadata` durch die
-jeweilige Objektart paginieren. `find_documents_missing_metadata` liefert
-kompakte Dokument-Metadaten zu fehlenden Zuordnungen, ohne den OCR-Text zu
-übertragen.
+> Review my Paperless organization using `get_organization_overview`. Assess
+> tags, correspondents, document types, storage paths, custom fields, and saved
+> views. Treat unused entries only as review candidates; do not propose deletions
+> yet.
 
-Empfohlener Ablauf:
+For detailed review, the model can paginate through each object type using
+`list_metadata`. `find_documents_missing_metadata` provides compact document
+metadata for missing assignments without sending OCR text.
 
-1. Analyse und Bereinigungsplan im Read-only-Modus erstellen.
-2. Vorgeschlagene Zielstruktur durch den Benutzer bestätigen lassen.
-3. Schreibmodus bei Bedarf mit `paperless-ngx-mcp setup` aktivieren und den MCP
-   neu starten.
-4. Änderungen in kleinen Batches durchführen und jeweils kontrollieren.
-5. Unbenutzte Organisationsobjekte mit `bulk_edit_objects` und `dry_run=true`
-   prüfen, die Vorschau bestätigen lassen und denselben Aufruf anschließend mit
-   `dry_run=false` ausführen.
+Recommended workflow:
 
-## Entwicklung
+1. Create an analysis and cleanup plan in read-only mode.
+2. Have the user approve the proposed target structure.
+3. Enable write mode with `paperless-ngx-mcp setup` if needed, then restart the
+   MCP server.
+4. Apply changes in small batches and verify each one.
+5. Preview unused organization-object removal with
+   `bulk_edit_objects(dry_run=true)`, obtain confirmation, and repeat the same
+   call with `dry_run=false`.
+
+## Development
 
 ```bash
 uv run ruff format .
@@ -250,7 +238,7 @@ uv run mypy
 uv run pytest
 ```
 
-Alles in einem Durchlauf:
+Run every check at once:
 
 ```bash
 uv run ruff format --check . \
@@ -259,18 +247,18 @@ uv run ruff format --check . \
   && uv run pytest
 ```
 
-## Sicherheit
+## Security
 
-- Der Server lauscht standardmäßig nicht auf einem Netzwerkport, sondern nutzt
-  ausschließlich `stdio`.
-- API-Token liegen in der zugriffsgeschützten Benutzerkonfiguration oder in
-  ausdrücklich gesetzten Prozessvariablen – nie automatisch in `.env`.
-- Der Wizard aktiviert Schreibzugriffe standardmäßig; mit `setup --read-only`
-  bleibt der Server im sicheren Lesemodus.
-- Endgültiges Löschen von Dokumenten sowie das Leeren des Papierkorbs sind auch
-  bei aktivierten Schreibzugriffen nicht möglich.
-- Suchergebnisse enthalten keinen vollständigen OCR-Text; dieser wird nur über
-  `get_document` und mit einem konfigurierbaren Größenlimit geliefert.
+- The server does not listen on a network port; it uses `stdio` only.
+- API tokens are stored in the access-restricted user configuration or in
+  explicitly supplied process variables, never in an automatically loaded
+  `.env` file.
+- The wizard enables writes by default; use `setup --read-only` for read-only
+  operation.
+- Permanent document deletion and emptying Paperless trash are unavailable even
+  when writes are enabled.
+- Search results do not include full OCR text; it is returned only by
+  `get_document`, subject to a configurable size limit.
 
-Weitere Hinweise zur Tokenablage und zur Meldung von Sicherheitslücken stehen in
-[SECURITY.md](SECURITY.md).
+See [SECURITY.md](SECURITY.md) for token-storage details and vulnerability
+reporting.

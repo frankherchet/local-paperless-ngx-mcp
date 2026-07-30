@@ -1,26 +1,24 @@
-# Sicherheit
+# Security
 
-## Zugangsdaten
+## Credentials
 
-`paperless-ngx-mcp setup` speichert URL und API-Token in einer lokalen,
-benutzerspezifischen Konfigurationsdatei. Auf POSIX-Systemen erzwingt der Server
-für diese Datei Rechte `0600` und für ihr Verzeichnis `0700`. Die Datei ist nicht
-verschlüsselt. Verwende daher ausschließlich ein geschütztes Benutzerkonto und
-teile die Datei nicht.
+`paperless-ngx-mcp setup` stores the URL and API token in a local,
+user-specific configuration file. On POSIX systems, the server enforces `0600`
+permissions for the file and `0700` for its directory. The file is not
+encrypted, so use a protected user account and never share the file.
 
-Der Server liest keine `.env`-Datei automatisch. Prozessvariablen sind für
-automatisierte und headless Einsätze weiterhin möglich; `PAPERLESS_URL` und
-`PAPERLESS_TOKEN` müssen dabei gemeinsam gesetzt werden.
+The server does not load `.env` files automatically. Process environment
+variables remain available for automated and headless deployments;
+`PAPERLESS_URL` and `PAPERLESS_TOKEN` must be supplied together.
 
-Der API-Token wird weder in Toolantworten noch in CLI-Ausgaben angezeigt.
+The API token is not included in tool responses or CLI output.
 
-## Dokumente
+## Documents
 
-Der Server stellt kein Werkzeug zum endgültigen Löschen von Dokumenten bereit,
-sendet für Dokumente keine HTTP-`DELETE`-Anfragen und leert den Paperless-
-Papierkorb nicht.
+The server provides no tool for permanently deleting documents, sends no HTTP
+`DELETE` request for documents, and cannot empty Paperless trash.
 
-## Sicherheitslücken melden
+## Reporting vulnerabilities
 
-Bitte keine Zugangsdaten oder Sicherheitslücken in öffentlichen Issues
-veröffentlichen. Melde sie stattdessen vertraulich an den Repository-Eigentümer.
+Do not disclose credentials or security vulnerabilities in public issues.
+Report them privately to the repository owner instead.
