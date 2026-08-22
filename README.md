@@ -35,7 +35,7 @@ Install the desired release wheel as a local `uv` tool. Replace the version in
 the URL when installing a newer release:
 
 ```bash
-uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.8.1/local_paperless_ngx_mcp-0.8.1-py3-none-any.whl"
+uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.8.2/local_paperless_ngx_mcp-0.8.2-py3-none-any.whl"
 paperless-ngx-mcp setup
 ```
 
@@ -142,6 +142,7 @@ explicitly.
 | `list_trashed_documents` | List recoverable trash contents | No |
 | `move_documents_to_trash` | Move documents to recoverable trash | Yes |
 | `restore_documents_from_trash` | Restore documents from trash | Yes |
+| `reprocess_documents` | Queue document reprocessing with Paperless' configured OCR mode | Yes |
 | `update_document` | Change supported document fields through REST PATCH | Optional |
 | `document_notes` | List or create document notes | Optional |
 
@@ -156,6 +157,9 @@ Even when writes are enabled, the MCP cannot permanently delete documents:
 - Emptying Paperless trash is explicitly blocked.
 - Unsupported bulk methods such as `merge` and `delete_pages` are rejected.
 - `move_documents_to_trash` uses only Paperless' recoverable trash.
+- `reprocess_documents` never changes the server-wide OCR configuration. Set
+  `PAPERLESS_OCR_MODE=redo` or `force` in Paperless itself, then use the tool
+  to queue the selected documents.
 
 Workflow objects can be deleted only through `delete_workflow`, which defaults
 to `dry_run=true`. This never affects existing documents or trash.

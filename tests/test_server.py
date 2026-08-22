@@ -29,6 +29,7 @@ async def test_server_exposes_expected_tools() -> None:
         "set_document_metadata_field",
         "modify_document_tags",
         "move_documents_to_trash",
+        "reprocess_documents",
         "list_trashed_documents",
         "restore_documents_from_trash",
         "update_document",
@@ -63,6 +64,11 @@ async def test_server_exposes_expected_tools() -> None:
     trash_tool = next(tool for tool in tools if tool.name == "move_documents_to_trash")
     assert trash_tool.annotations is not None
     assert trash_tool.annotations.destructiveHint is True
+
+    reprocess_tool = next(tool for tool in tools if tool.name == "reprocess_documents")
+    assert reprocess_tool.annotations is not None
+    assert reprocess_tool.annotations.readOnlyHint is False
+    assert reprocess_tool.annotations.destructiveHint is False
 
     object_bulk_tool = next(tool for tool in tools if tool.name == "bulk_edit_objects")
     assert object_bulk_tool.annotations is not None

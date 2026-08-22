@@ -516,6 +516,17 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         async with use_client() as paperless:
             return await paperless.move_documents_to_trash(document_ids)
 
+    @server.tool(annotations=WRITE, tags={"paperless", "documents", "ocr", "write"})
+    async def reprocess_documents(document_ids: list[int]) -> JsonObject:
+        """Queue Paperless document reprocessing with the server's configured OCR mode.
+
+        Paperless controls whether this is redo or force through PAPERLESS_OCR_MODE;
+        the MCP does not alter that server-wide setting. The operation is asynchronous.
+        """
+        _validate_document_ids(document_ids)
+        async with use_client() as paperless:
+            return await paperless.reprocess_documents(document_ids)
+
     @server.tool(annotations=READ_ONLY, tags={"paperless", "trash", "documents"})
     async def list_trashed_documents(page: int = 1, page_size: int = 20) -> JsonObject:
         """List compact records of documents currently in Paperless trash."""
