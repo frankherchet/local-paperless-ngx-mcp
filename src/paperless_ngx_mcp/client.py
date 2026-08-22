@@ -3,16 +3,40 @@
 from __future__ import annotations
 
 import asyncio
+import json as jsonlib
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TypeGuard
 
 import httpx
 
 from paperless_ngx_mcp import __version__
 from paperless_ngx_mcp.config import Settings
+from paperless_ngx_mcp.mutation_policy import (
+    DELETABLE_ORGANIZATION_OBJECT_TYPES,
+    PaperlessError,
+    PermanentDeletionDisabled,
+    ReadOnlyError,
+    enforce_transport_mutation_policy,
+    ensure_deletable_organization_type,
+    ensure_metadata_deletion_operation,
+    ensure_reference_review_before_deletion,
+    ensure_safe_document_bulk_method,
+    ensure_writable_organization_type,
+    ensure_write_enabled,
+    write_mode,
+)
 
 JsonObject = dict[str, Any]
 QueryValue = str | int | bool
+
+__all__ = [
+    "JsonObject",
+    "PaperlessApiError",
+    "PaperlessClient",
+    "PaperlessError",
+    "PermanentDeletionDisabled",
+    "ReadOnlyError",
+]
 
 ORGANIZATION_OBJECT_TYPES = {
     "tags",
@@ -33,32 +57,6 @@ MISSING_METADATA_FILTERS: dict[str, tuple[str, QueryValue]] = {
     "archive_serial_number": ("archive_serial_number__isnull", True),
 }
 
-WRITABLE_ORGANIZATION_OBJECT_TYPES = {
-    "tags",
-    "correspondents",
-    "document_types",
-    "storage_paths",
-    "custom_fields",
-}
-
-DELETABLE_ORGANIZATION_OBJECT_TYPES = {
-    "tags",
-    "correspondents",
-    "document_types",
-    "storage_paths",
-}
-
-SAFE_BULK_DOCUMENT_METHODS = {
-    "set_correspondent",
-    "set_document_type",
-    "set_storage_path",
-    "add_tag",
-    "remove_tag",
-    "modify_tags",
-    "modify_custom_fields",
-    "delete",  # Paperless moves documents to its reversible trash.
-}
-
 DOCUMENT_METADATA_FILTERS = {
     "tag": "tags__id",
     "correspondent": "correspondent__id",
@@ -71,24 +69,12 @@ DEFAULT_INTAKE_WORKFLOW_NAME = "Standard-Eingang – neue Dokumente"  # noqa: RU
 DEFAULT_INTAKE_STORAGE_PATH_ID = 18
 
 
-class PaperlessError(RuntimeError):
-    """Base error raised for Paperless API failures."""
-
-
 class PaperlessApiError(PaperlessError):
     """An HTTP request to Paperless failed."""
 
     def __init__(self, status_code: int, message: str) -> None:
         self.status_code = status_code
         super().__init__(f"Paperless API returned HTTP {status_code}: {message}")
-
-
-class ReadOnlyError(PaperlessError):
-    """A write was attempted while read-only mode is active."""
-
-
-class PermanentDeletionDisabled(PaperlessError):
-    """The requested operation could permanently delete Paperless data."""
 
 
 class PaperlessClient:
@@ -128,8 +114,18 @@ class PaperlessClient:
         *,
         params: Mapping[str, QueryValue] | None = None,
         json: JsonObject | None = None,
+        _allow_workflow_deletion: bool = False,
+        _allow_metadata_deletion: bool = False,
     ) -> JsonObject:
-        self._enforce_deletion_safety(method, path, json)
+        mutation = enforce_transport_mutation_policy(
+            method,
+            path,
+            json,
+            allow_workflow_deletion=_allow_workflow_deletion,
+            allow_metadata_deletion=_allow_metadata_deletion,
+        )
+        if mutation.is_mutation:
+            ensure_write_enabled(write_mode(read_only=self.settings.paperless_read_only))
         response = await self._client.request(method, path.lstrip("/"), params=params, json=json)
         if response.is_error:
             raise PaperlessApiError(response.status_code, self._error_message(response))
@@ -359,7 +355,7 @@ class PaperlessClient:
         values: JsonObject,
     ) -> JsonObject:
         self._ensure_write_enabled()
-        self._validate_writable_object_type(object_type)
+        ensure_writable_organization_type(object_type)
         return await self.request("POST", f"api/{object_type}/", json=values)
 
     async def update_organization_item(
@@ -369,7 +365,7 @@ class PaperlessClient:
         changes: JsonObject,
     ) -> JsonObject:
         self._ensure_write_enabled()
-        self._validate_writable_object_type(object_type)
+        ensure_writable_organization_type(object_type)
         if not changes:
             raise ValueError("At least one organization change must be provided")
         return await self.request("PATCH", f"api/{object_type}/{item_id}/", json=changes)
@@ -406,7 +402,11 @@ class PaperlessClient:
         if dry_run:
             return result
         self._ensure_write_enabled()
-        deletion = await self.request("DELETE", f"api/workflows/{workflow_id}/")
+        deletion = await self.request(
+            "DELETE",
+            f"api/workflows/{workflow_id}/",
+            _allow_workflow_deletion=True,
+        )
         result["deleted"] = True
         result["paperless_response"] = deletion
         return result
@@ -537,14 +537,18 @@ class PaperlessClient:
         item_ids: list[int] | None,
     ) -> JsonObject:
         """Check document and tag-hierarchy references before metadata deletion."""
-        self._validate_deletable_object_type(object_type)
-        items = await self._fetch_all_objects(object_type)
-        workflows = await self._fetch_all_objects("workflows")
+        ensure_deletable_organization_type(object_type)
+        items, workflows, mail_rules, saved_views = await asyncio.gather(
+            self._fetch_all_objects(object_type),
+            self._fetch_all_rule_records("workflows"),
+            self._fetch_all_rule_records("mail_rules"),
+            self._fetch_all_rule_records("saved_views"),
+        )
         selected_ids = set(item_ids) if item_ids is not None else None
         items_by_id = {
             item["id"]: item
             for item in items
-            if isinstance(item.get("id"), int)
+            if self._is_positive_int(item.get("id"))
             and (selected_ids is None or item["id"] in selected_ids)
         }
 
@@ -553,7 +557,7 @@ class PaperlessClient:
             for item in items:
                 item_id = item.get("id")
                 parent_id = item.get("parent")
-                if isinstance(item_id, int) and isinstance(parent_id, int):
+                if self._is_positive_int(item_id) and self._is_positive_int(parent_id):
                     child_tag_ids.setdefault(parent_id, []).append(item_id)
 
         candidates: list[JsonObject] = []
@@ -563,11 +567,15 @@ class PaperlessClient:
             item = items_by_id[item_id]
             document_count = item.get("document_count")
             children = sorted(child_tag_ids.get(item_id, []))
-            if selected_ids is None and isinstance(document_count, int) and document_count > 0:
+            if (
+                selected_ids is None
+                and self._is_nonnegative_int(document_count)
+                and document_count > 0
+            ):
                 referenced_items_omitted += 1
                 continue
             reasons: list[str] = []
-            if not isinstance(document_count, int):
+            if not self._is_nonnegative_int(document_count):
                 reasons.append("document_count_unavailable")
             elif document_count != 0:
                 reasons.append("referenced_by_documents")
@@ -580,6 +588,20 @@ class PaperlessClient:
             )
             if workflow_references:
                 reasons.append("referenced_by_workflows")
+            mail_rule_references = self._find_mail_rule_references(
+                mail_rules,
+                object_type,
+                item_id,
+            )
+            if mail_rule_references:
+                reasons.append("referenced_by_mail_rules")
+            saved_view_references = self._find_saved_view_references(
+                saved_views,
+                object_type,
+                item_id,
+            )
+            if saved_view_references:
+                reasons.append("referenced_by_saved_views")
 
             assessment: JsonObject = {
                 "id": item_id,
@@ -589,6 +611,8 @@ class PaperlessClient:
                 "deletable": not reasons,
                 "blocking_reasons": reasons,
                 "workflow_references": workflow_references,
+                "mail_rule_references": mail_rule_references,
+                "saved_view_references": saved_view_references,
             }
             if object_type == "storage_paths":
                 assessment["path"] = item.get("path")
@@ -605,7 +629,13 @@ class PaperlessClient:
             "blocked_count": len(blocked),
             "scanned_count": len(items),
             "referenced_items_omitted": referenced_items_omitted,
-            "reference_checks": ["document_count", "workflow_triggers", "workflow_actions"]
+            "reference_checks": [
+                "document_count",
+                "workflow_triggers",
+                "workflow_actions",
+                "mail_rules",
+                "saved_views",
+            ]
             + (["child_tag_relationships"] if object_type == "tags" else []),
             "requires_explicit_user_approval": True,
         }
@@ -619,20 +649,18 @@ class PaperlessClient:
         dry_run: bool,
     ) -> JsonObject:
         """Mirror Paperless object bulk editing with centralized safety checks."""
-        self._validate_deletable_object_type(object_type)
-        if operation != "delete":
-            raise ValueError(f"Unsupported object bulk operation: {operation}")
+        ensure_metadata_deletion_operation(object_type, operation)
         if not dry_run:
             self._ensure_write_enabled()
 
         preview = await self._preview_organization_object_deletion(object_type, objects)
         blocked = preview["blocked"]
         missing_ids = preview["missing_ids"]
-        if not dry_run and (blocked or missing_ids):
-            raise ValueError(
-                "Organization deletion blocked by reference check: "
-                f"blocked={blocked}, missing_ids={missing_ids}"
-            )
+        ensure_reference_review_before_deletion(
+            dry_run=dry_run,
+            blocked=blocked,
+            missing_ids=missing_ids,
+        )
 
         result: JsonObject = {
             "dry_run": dry_run,
@@ -653,6 +681,7 @@ class PaperlessClient:
                 "object_type": object_type,
                 "operation": operation,
             },
+            _allow_metadata_deletion=True,
         )
         result["deletion_submitted"] = True
         result["paperless_response"] = response
@@ -700,6 +729,10 @@ class PaperlessClient:
     async def move_documents_to_trash(self, document_ids: list[int]) -> JsonObject:
         """Move documents to Paperless trash; this does not permanently delete them."""
         return await self._bulk_edit_documents(document_ids, "delete", {})
+
+    async def reprocess_documents(self, document_ids: list[int]) -> JsonObject:
+        """Queue Paperless reprocessing using its configured OCR mode."""
+        return await self._bulk_edit_documents(document_ids, "reprocess", {})
 
     async def list_trashed_documents(
         self,
@@ -764,8 +797,7 @@ class PaperlessClient:
         parameters: JsonObject,
     ) -> JsonObject:
         self._ensure_write_enabled()
-        if method not in SAFE_BULK_DOCUMENT_METHODS:
-            raise PermanentDeletionDisabled(f"Bulk document method is not allowed: {method}")
+        ensure_safe_document_bulk_method(method)
         return await self.request(
             "POST",
             "api/documents/bulk_edit/",
@@ -796,6 +828,30 @@ class PaperlessClient:
             if page > 1_000:
                 raise PaperlessApiError(200, f"Pagination limit exceeded for {object_type}")
 
+    async def _fetch_all_rule_records(self, object_type: str) -> list[JsonObject]:
+        """Read every rule source used by metadata-deletion reference checks.
+
+        Invalid pagination data is a safety failure: callers must not infer that a
+        record is unused when a reference source cannot be interpreted.
+        """
+        page = 1
+        records: list[JsonObject] = []
+        while True:
+            payload = await self.request(
+                "GET",
+                f"api/{object_type}/",
+                params={"page": page, "page_size": 100},
+            )
+            results = payload.get("results")
+            if not isinstance(results, list) or not all(isinstance(item, dict) for item in results):
+                raise PaperlessApiError(200, f"Invalid paginated response for {object_type}")
+            records.extend(results)
+            if not payload.get("next"):
+                return records
+            page += 1
+            if page > 1_000:
+                raise PaperlessApiError(200, f"Pagination limit exceeded for {object_type}")
+
     async def _count_documents(
         self,
         filter_pair: tuple[str, QueryValue] | None,
@@ -810,20 +866,7 @@ class PaperlessClient:
         return count
 
     def _ensure_write_enabled(self) -> None:
-        if self.settings.paperless_read_only:
-            raise ReadOnlyError(
-                "Write tools are disabled. Set PAPERLESS_READ_ONLY=false to enable updates."
-            )
-
-    @staticmethod
-    def _validate_writable_object_type(object_type: str) -> None:
-        if object_type not in WRITABLE_ORGANIZATION_OBJECT_TYPES:
-            raise ValueError(f"Unsupported writable organization object type: {object_type}")
-
-    @staticmethod
-    def _validate_deletable_object_type(object_type: str) -> None:
-        if object_type not in DELETABLE_ORGANIZATION_OBJECT_TYPES:
-            raise ValueError(f"Unsupported deletable organization object type: {object_type}")
+        ensure_write_enabled(write_mode(read_only=self.settings.paperless_read_only))
 
     @staticmethod
     def _find_object_by_id(
@@ -975,67 +1018,6 @@ class PaperlessClient:
         return problems
 
     @staticmethod
-    def _enforce_deletion_safety(
-        method: str,
-        path: str,
-        json: JsonObject | None,
-    ) -> None:
-        normalized_path = path.lstrip("/")
-        if method.upper() == "DELETE":
-            workflow_id = normalized_path.removeprefix("api/workflows/").removesuffix("/")
-            if (
-                normalized_path.startswith("api/workflows/")
-                and workflow_id.isdigit()
-                and int(workflow_id) > 0
-            ):
-                return
-            raise PermanentDeletionDisabled(
-                "HTTP DELETE is disabled in this MCP server. "
-                "Documents can only be moved to Paperless trash; only workflow objects "
-                "may be deleted through delete_workflow."
-            )
-        if method.upper() == "POST" and normalized_path == "api/bulk_edit_objects/":
-            object_type = json.get("object_type") if json is not None else None
-            operation = json.get("operation") if json is not None else None
-            object_ids = json.get("objects") if json is not None else None
-            valid_ids = (
-                isinstance(object_ids, list)
-                and bool(object_ids)
-                and all(
-                    isinstance(item_id, int) and not isinstance(item_id, bool) and item_id > 0
-                    for item_id in object_ids
-                )
-            )
-            if (
-                object_type in DELETABLE_ORGANIZATION_OBJECT_TYPES
-                and operation == "delete"
-                and valid_ids
-            ):
-                return
-            raise PermanentDeletionDisabled(
-                "Object bulk editing is restricted to deleting explicitly selected tags, "
-                "correspondents, document types, or storage paths."
-            )
-        if method.upper() == "POST" and normalized_path == "api/trash/":
-            action = json.get("action") if json is not None else None
-            if action == "restore":
-                return
-            raise PermanentDeletionDisabled(
-                "Only restoring documents is allowed on the Paperless trash endpoint. "
-                "Emptying trash is permanently disabled."
-            )
-        if (
-            method.upper() == "POST"
-            and normalized_path == "api/documents/bulk_edit/"
-            and json is not None
-        ):
-            bulk_method = json.get("method")
-            if bulk_method not in SAFE_BULK_DOCUMENT_METHODS:
-                raise PermanentDeletionDisabled(
-                    f"Bulk document method is not allowed: {bulk_method}"
-                )
-
-    @staticmethod
     def _enrich_object_results(payload: JsonObject) -> JsonObject:
         from paperless_ngx_mcp.organization import enrich_organization_item
 
@@ -1045,6 +1027,34 @@ class PaperlessClient:
                 enrich_organization_item(item) for item in results if isinstance(item, dict)
             ]
         return payload
+
+    @staticmethod
+    def _is_positive_int(value: object) -> TypeGuard[int]:
+        return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+    @staticmethod
+    def _is_nonnegative_int(value: object) -> TypeGuard[int]:
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+    @staticmethod
+    def _matches_metadata_reference(
+        value: object,
+        *,
+        item_id: int,
+        many: bool,
+        context: str,
+    ) -> bool:
+        if value is None:
+            return False
+        if many:
+            if not isinstance(value, list) or not all(
+                PaperlessClient._is_positive_int(reference_id) for reference_id in value
+            ):
+                raise PaperlessApiError(200, f"Invalid metadata reference in {context}")
+            return item_id in value
+        if not PaperlessClient._is_positive_int(value):
+            raise PaperlessApiError(200, f"Invalid metadata reference in {context}")
+        return value == item_id
 
     @staticmethod
     def _find_workflow_references(
@@ -1063,18 +1073,21 @@ class PaperlessClient:
             "correspondents": (
                 ("filter_has_correspondent", False),
                 ("filter_has_not_correspondents", True),
+                ("filter_has_any_correspondents", True),
                 ("assign_correspondent", False),
                 ("remove_correspondents", True),
             ),
             "document_types": (
                 ("filter_has_document_type", False),
                 ("filter_has_not_document_types", True),
+                ("filter_has_any_document_types", True),
                 ("assign_document_type", False),
                 ("remove_document_types", True),
             ),
             "storage_paths": (
                 ("filter_has_storage_path", False),
                 ("filter_has_not_storage_paths", True),
+                ("filter_has_any_storage_paths", True),
                 ("assign_storage_path", False),
                 ("remove_storage_paths", True),
             ),
@@ -1089,19 +1102,19 @@ class PaperlessClient:
             for section_name in ("triggers", "actions"):
                 entries = workflow.get(section_name)
                 if not isinstance(entries, list):
-                    continue
+                    raise PaperlessApiError(200, f"Invalid workflow {section_name} reference data")
                 for entry in entries:
                     if not isinstance(entry, dict):
-                        continue
+                        raise PaperlessApiError(200, "Invalid workflow reference entry")
                     entry_id = entry.get("id")
                     for field, many in configured_fields:
                         if (field in trigger_fields) != (section_name == "triggers"):
                             continue
-                        value = entry.get(field)
-                        is_reference = (
-                            isinstance(value, list) and item_id in value
-                            if many
-                            else value == item_id
+                        is_reference = PaperlessClient._matches_metadata_reference(
+                            entry.get(field),
+                            item_id=item_id,
+                            many=many,
+                            context=f"workflow {workflow.get('id')} {field}",
                         )
                         if is_reference:
                             references.append(
@@ -1115,6 +1128,96 @@ class PaperlessClient:
                                 }
                             )
         return references
+
+    @staticmethod
+    def _find_mail_rule_references(
+        mail_rules: list[JsonObject],
+        object_type: str,
+        item_id: int,
+    ) -> list[JsonObject]:
+        fields: dict[str, tuple[tuple[str, bool], ...]] = {
+            "tags": (("assign_tags", True),),
+            "correspondents": (("assign_correspondent", False),),
+            "document_types": (("assign_document_type", False),),
+            "storage_paths": (("assign_storage_path", False),),
+        }
+        references: list[JsonObject] = []
+        for rule in mail_rules:
+            for field, many in fields[object_type]:
+                if PaperlessClient._matches_metadata_reference(
+                    rule.get(field),
+                    item_id=item_id,
+                    many=many,
+                    context=f"mail rule {rule.get('id')} {field}",
+                ):
+                    references.append(
+                        {
+                            "mail_rule_id": rule.get("id"),
+                            "mail_rule_name": rule.get("name"),
+                            "field": field,
+                        }
+                    )
+        return references
+
+    @staticmethod
+    def _find_saved_view_references(
+        saved_views: list[JsonObject],
+        object_type: str,
+        item_id: int,
+    ) -> list[JsonObject]:
+        rule_types = {
+            "tags": {6, 7, 17, 22},
+            "correspondents": {3, 26, 27},
+            "document_types": {4, 28, 29},
+            "storage_paths": {25, 30, 31},
+        }
+        references: list[JsonObject] = []
+        for saved_view in saved_views:
+            rules = saved_view.get("filter_rules", [])
+            if not isinstance(rules, list) or not all(isinstance(rule, dict) for rule in rules):
+                raise PaperlessApiError(200, "Invalid saved view filter rule data")
+            for rule in rules:
+                rule_type = rule.get("rule_type")
+                if rule_type not in rule_types[object_type]:
+                    continue
+                if item_id not in PaperlessClient._saved_view_reference_ids(rule.get("value")):
+                    continue
+                references.append(
+                    {
+                        "saved_view_id": saved_view.get("id"),
+                        "saved_view_name": saved_view.get("name"),
+                        "rule_type": rule_type,
+                    }
+                )
+        return references
+
+    @staticmethod
+    def _saved_view_reference_ids(value: object) -> set[int]:
+        if value is None or value == "":
+            return set()
+        if isinstance(value, int) and not isinstance(value, bool):
+            values: object = [value]
+        elif isinstance(value, list):
+            values = value
+        elif isinstance(value, str):
+            try:
+                values = jsonlib.loads(value)
+            except jsonlib.JSONDecodeError:
+                values = value.split(",")
+        else:
+            raise PaperlessApiError(200, "Invalid saved view metadata reference")
+        if isinstance(values, int) and not isinstance(values, bool):
+            values = [values]
+        if not isinstance(values, list):
+            raise PaperlessApiError(200, "Invalid saved view metadata reference")
+        result: set[int] = set()
+        for raw_value in values:
+            if isinstance(raw_value, str) and raw_value.isdigit():
+                raw_value = int(raw_value)
+            if not PaperlessClient._is_positive_int(raw_value):
+                raise PaperlessApiError(200, "Invalid saved view metadata reference")
+            result.add(raw_value)
+        return result
 
     @staticmethod
     def _document_summary(document: JsonObject) -> JsonObject:

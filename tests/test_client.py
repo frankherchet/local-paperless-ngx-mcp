@@ -344,6 +344,34 @@ async def test_permanent_document_deletion_is_blocked_before_network() -> None:
 
 
 @pytest.mark.asyncio
+async def test_raw_write_requests_respect_read_only_and_workflow_preview_guards() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Mutation guard must run before the network request")
+
+    async with PaperlessClient(
+        make_settings(),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(ReadOnlyError, match="PAPERLESS_READ_ONLY=false"):
+            await client.request("POST", "api/tags/", json={"name": "Nope"})
+        with pytest.raises(ReadOnlyError, match="PAPERLESS_READ_ONLY=false"):
+            await client.request("PATCH", "api/tags/1/", json={"name": "Nope"})
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(PermanentDeletionDisabled, match="must use delete_workflow"):
+            await client.request("DELETE", "api/workflows/42/")
+        with pytest.raises(PermanentDeletionDisabled, match="must use bulk_edit_objects"):
+            await client.request(
+                "POST",
+                "api/bulk_edit_objects/",
+                json={"objects": [42], "object_type": "tags", "operation": "delete"},
+            )
+
+
+@pytest.mark.asyncio
 async def test_document_organization_writes_use_allowlisted_bulk_methods() -> None:
     requests: list[dict[str, object]] = []
 
@@ -362,6 +390,7 @@ async def test_document_organization_writes_use_allowlisted_bulk_methods() -> No
             remove_tag_ids=[3],
         )
         await client.move_documents_to_trash([12])
+        await client.reprocess_documents([13])
 
     assert requests == [
         {
@@ -375,6 +404,7 @@ async def test_document_organization_writes_use_allowlisted_bulk_methods() -> No
             "parameters": {"add_tags": [2], "remove_tags": [3]},
         },
         {"documents": [12], "method": "delete", "parameters": {}},
+        {"documents": [13], "method": "reprocess", "parameters": {}},
     ]
 
 
@@ -436,6 +466,11 @@ async def test_bulk_edit_objects_dry_run_checks_documents_and_child_tags() -> No
                     ],
                 },
             )
+        if request.url.path in {
+            "/paperless/api/mail_rules/",
+            "/paperless/api/saved_views/",
+        }:
+            return httpx.Response(200, json={"count": 0, "next": None, "results": []})
         assert request.url.path == "/paperless/api/tags/"
         return httpx.Response(
             200,
@@ -489,6 +524,11 @@ async def test_bulk_edit_objects_rechecks_then_uses_matching_rest_endpoint() -> 
                     200,
                     json={"count": 0, "next": None, "results": []},
                 )
+            if request.url.path in {
+                "/paperless/api/mail_rules/",
+                "/paperless/api/saved_views/",
+            }:
+                return httpx.Response(200, json={"count": 0, "next": None, "results": []})
             return httpx.Response(
                 200,
                 json={
@@ -515,6 +555,8 @@ async def test_bulk_edit_objects_rechecks_then_uses_matching_rest_endpoint() -> 
     assert seen == [
         ("GET", "/paperless/api/correspondents/", None),
         ("GET", "/paperless/api/workflows/", None),
+        ("GET", "/paperless/api/mail_rules/", None),
+        ("GET", "/paperless/api/saved_views/", None),
         (
             "POST",
             "/paperless/api/bulk_edit_objects/",
@@ -556,6 +598,115 @@ async def test_delete_used_organization_item_is_blocked_before_mutation() -> Non
                 "delete",
                 dry_run=False,
             )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("object_type", "workflow_field"),
+    [
+        ("correspondents", "filter_has_any_correspondents"),
+        ("document_types", "filter_has_any_document_types"),
+        ("storage_paths", "filter_has_any_storage_paths"),
+    ],
+)
+async def test_v10_workflow_any_filters_block_metadata_deletion(
+    object_type: str,
+    workflow_field: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method != "GET":
+            raise AssertionError("Referenced metadata must not be deleted")
+        if request.url.path == f"/paperless/api/{object_type}/":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [{"id": 11, "name": "Referenced", "document_count": 0}],
+                },
+            )
+        if request.url.path == "/paperless/api/workflows/":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [
+                        {
+                            "id": 77,
+                            "name": "v10 any filter",
+                            "triggers": [{workflow_field: [11]}],
+                            "actions": [],
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(200, json={"count": 0, "next": None, "results": []})
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.bulk_edit_objects(object_type, [11], "delete", dry_run=True)
+
+    blocked = result["preflight"]["blocked"]
+    assert blocked[0]["blocking_reasons"] == ["referenced_by_workflows"]
+    assert blocked[0]["workflow_references"][0]["field"] == workflow_field
+
+
+@pytest.mark.asyncio
+async def test_mail_rule_and_saved_view_references_block_metadata_deletion() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method != "GET":
+            raise AssertionError("Referenced metadata must not be deleted")
+        if request.url.path == "/paperless/api/tags/":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [{"id": 8, "name": "Protected", "document_count": 0}],
+                },
+            )
+        if request.url.path == "/paperless/api/mail_rules/":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [{"id": 3, "name": "Mail tag", "assign_tags": [8]}],
+                },
+            )
+        if request.url.path == "/paperless/api/saved_views/":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [
+                        {
+                            "id": 5,
+                            "name": "Tag view",
+                            "filter_rules": [{"rule_type": 6, "value": "[8]"}],
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(200, json={"count": 0, "next": None, "results": []})
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.bulk_edit_objects("tags", [8], "delete", dry_run=True)
+
+    blocked = result["preflight"]["blocked"]
+    assert blocked[0]["blocking_reasons"] == [
+        "referenced_by_mail_rules",
+        "referenced_by_saved_views",
+    ]
+    assert blocked[0]["mail_rule_references"][0]["mail_rule_id"] == 3
+    assert blocked[0]["saved_view_references"][0]["saved_view_id"] == 5
 
 
 @pytest.mark.asyncio
