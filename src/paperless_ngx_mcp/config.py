@@ -13,8 +13,7 @@ from typing import Any
 
 from dotenv import dotenv_values
 from platformdirs import user_config_dir
-from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 APP_NAME = "local-paperless-ngx-mcp"
 CONFIG_FILENAME = "config.json"
@@ -31,14 +30,14 @@ class ConfigurationError(RuntimeError):
     """Raised when runtime configuration is absent, invalid, or unsafe."""
 
 
-class Settings(BaseSettings):
+class Settings(BaseModel):
     """Validated Paperless connection settings.
 
     Settings are assembled explicitly by :func:`get_settings`.  In particular, an
     ``.env`` file is never loaded implicitly.
     """
 
-    model_config = SettingsConfigDict(extra="ignore", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     paperless_url: AnyHttpUrl = Field(alias="PAPERLESS_URL")
     paperless_token: SecretStr = Field(alias="PAPERLESS_TOKEN")

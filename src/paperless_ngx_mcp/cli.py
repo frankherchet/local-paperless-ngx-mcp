@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import json
 import os
 import sys
 from collections.abc import Callable, Sequence
@@ -118,7 +119,8 @@ def _run_setup(
     default_url = str(values.get("PAPERLESS_URL", ""))
     url_answer = ""
     if args.from_env is None or not default_url:
-        url_answer = input_func(_prompt_with_default("Paperless URL", default_url)).strip()
+        prompt = f"Paperless URL [{default_url}]: " if default_url else "Paperless URL: "
+        url_answer = input_func(prompt).strip()
     if url_answer:
         values["PAPERLESS_URL"] = url_answer
     elif not default_url:
@@ -162,7 +164,7 @@ def _run_config(args: argparse.Namespace) -> None:
             print(f"No local configuration exists at {target}")
             return
         print(f"Configuration file: {target}")
-        print(json_for_display(masked_config_values(values)))
+        print(json.dumps(masked_config_values(values), indent=2, sort_keys=True))
         return
     if args.config_command == "reset":
         if not args.yes:
@@ -181,14 +183,3 @@ def _verify_connection(settings: Settings) -> dict[str, Any]:
             return await client.check_connection()
 
     return asyncio.run(check())
-
-
-def _prompt_with_default(label: str, default: str) -> str:
-    return f"{label} [{default}]: " if default else f"{label}: "
-
-
-def json_for_display(values: dict[str, Any]) -> str:
-    """Render a stable terminal representation used by the config subcommand."""
-    import json
-
-    return json.dumps(values, indent=2, sort_keys=True)

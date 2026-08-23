@@ -5,8 +5,31 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter, defaultdict
+from typing import Any
 
-from paperless_ngx_mcp.client import JsonObject
+JsonObject = dict[str, Any]
+
+ORGANIZATION_OBJECT_TYPES = frozenset(
+    {
+        "tags",
+        "correspondents",
+        "document_types",
+        "storage_paths",
+        "custom_fields",
+        "saved_views",
+        "workflows",
+    }
+)
+
+DOCUMENT_COUNT_FILTERS: dict[str, tuple[str, bool] | None] = {
+    "total": None,
+    "without_correspondent": ("correspondent__isnull", True),
+    "without_document_type": ("document_type__isnull", True),
+    "without_storage_path": ("storage_path__isnull", True),
+    "without_tags": ("is_tagged", False),
+    "without_custom_fields": ("has_custom_fields", False),
+    "without_archive_serial_number": ("archive_serial_number__isnull", True),
+}
 
 MATCHING_ALGORITHMS = {
     0: "none",
@@ -18,13 +41,15 @@ MATCHING_ALGORITHMS = {
     6: "automatic",
 }
 
-COUNTED_OBJECT_TYPES = {
-    "tags",
-    "correspondents",
-    "document_types",
-    "storage_paths",
-    "custom_fields",
-}
+COUNTED_OBJECT_TYPES = frozenset(
+    {
+        "tags",
+        "correspondents",
+        "document_types",
+        "storage_paths",
+        "custom_fields",
+    }
+)
 
 
 def enrich_organization_item(item: JsonObject) -> JsonObject:
