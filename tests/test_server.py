@@ -12,6 +12,7 @@ async def test_server_exposes_expected_tools() -> None:
         "paperless_status",
         "search_documents",
         "get_document",
+        "get_document_history",
         "list_metadata",
         "list_workflows",
         "get_workflow",
@@ -51,6 +52,10 @@ async def test_server_exposes_expected_tools() -> None:
 
     get_document_tool = next(tool for tool in tools if tool.name == "get_document")
     assert "include_file_metadata" in get_document_tool.inputSchema["properties"]
+
+    history_tool = next(tool for tool in tools if tool.name == "get_document_history")
+    assert history_tool.annotations is not None
+    assert history_tool.annotations.readOnlyHint is True
 
     notes_tool = next(tool for tool in tools if tool.name == "document_notes")
     assert set(notes_tool.inputSchema["properties"]) == {

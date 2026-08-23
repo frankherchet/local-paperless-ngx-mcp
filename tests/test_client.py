@@ -96,6 +96,35 @@ async def test_get_document_truncates_ocr_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_document_history_returns_a_compact_audit_result() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/paperless/api/documents/5/history/"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 9,
+                    "timestamp": "2026-08-23T10:00:00Z",
+                    "action": "Updated",
+                    "changes": {"title": ["Old", "New"]},
+                    "actor": {"id": 1, "username": "frank"},
+                }
+            ],
+        )
+
+    async with PaperlessClient(
+        make_settings(),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await client.get_document_history(5)
+
+    assert result["document_id"] == 5
+    assert result["count"] == 1
+    assert result["entries"][0]["changes"] == {"title": ["Old", "New"]}
+
+
+@pytest.mark.asyncio
 async def test_update_is_blocked_in_read_only_mode() -> None:
     async with PaperlessClient(make_settings()) as client:
         with pytest.raises(ReadOnlyError, match="PAPERLESS_READ_ONLY=false"):

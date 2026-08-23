@@ -35,7 +35,7 @@ Install the desired release wheel as a local `uv` tool. Replace the version in
 the URL when installing a newer release:
 
 ```bash
-uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.8.2/local_paperless_ngx_mcp-0.8.2-py3-none-any.whl"
+uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.8.3/local_paperless_ngx_mcp-0.8.3-py3-none-any.whl"
 paperless-ngx-mcp setup
 ```
 
@@ -125,6 +125,7 @@ explicitly.
 | `paperless_status` | Check connectivity, versions, and document count | No |
 | `search_documents` | Find documents in four search modes | No |
 | `get_document` | Retrieve document metadata, OCR text, and optional file checksums | No |
+| `get_document_history` | Retrieve audit-history entries for one document | No |
 | `list_metadata` | List organization objects and workflows | No |
 | `list_workflows` / `get_workflow` | Paginate or retrieve nested workflows | No |
 | `create_workflow` / `update_workflow` | Create or patch nested Paperless workflows | Yes |
