@@ -147,6 +147,20 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         async with use_client() as paperless:
             return await paperless.get_document_history(document_id)
 
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "tasks"})
+    async def get_task(task_id: str) -> JsonObject:
+        """Return the status of one Paperless background task."""
+        if not task_id.strip():
+            raise ValueError("task_id must not be empty")
+        async with use_client() as paperless:
+            return await paperless.get_task(task_id)
+
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "tasks"})
+    async def list_active_tasks() -> JsonObject:
+        """List pending and running Paperless background tasks."""
+        async with use_client() as paperless:
+            return await paperless.list_active_tasks()
+
     @server.tool(annotations=READ_ONLY, tags={"paperless", "metadata"})
     async def list_metadata(
         object_type: Literal[
