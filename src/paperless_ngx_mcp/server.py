@@ -136,6 +136,17 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
                 max_content_chars=max_content_chars,
             )
 
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "documents", "history"})
+    async def get_document_history(document_id: int) -> JsonObject:
+        """Return the audit history for one document, newest entry first.
+
+        Paperless must have audit logging enabled and the configured token needs
+        permission to view audit-log entries.
+        """
+        _validate_positive_ids([document_id], "document_id")
+        async with use_client() as paperless:
+            return await paperless.get_document_history(document_id)
+
     @server.tool(annotations=READ_ONLY, tags={"paperless", "metadata"})
     async def list_metadata(
         object_type: Literal[

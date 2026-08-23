@@ -236,6 +236,14 @@ class PaperlessClient:
             )
         return document
 
+    async def get_document_history(self, document_id: int) -> JsonObject:
+        """Return Paperless audit entries for one document."""
+        payload = await self.request("GET", f"api/documents/{document_id}/history/")
+        entries = payload.get("result")
+        if not isinstance(entries, list):
+            raise PaperlessApiError(200, "Document history response was invalid")
+        return {"document_id": document_id, "count": len(entries), "entries": entries}
+
     async def list_objects(
         self,
         object_type: str,
