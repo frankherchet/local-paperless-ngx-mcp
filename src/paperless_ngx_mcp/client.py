@@ -244,6 +244,30 @@ class PaperlessClient:
             raise PaperlessApiError(200, "Document history response was invalid")
         return {"document_id": document_id, "count": len(entries), "entries": entries}
 
+    async def get_task(self, task_id: str) -> JsonObject:
+        """Return one Paperless background task, when it still exists."""
+        payload = await self.request(
+            "GET",
+            "api/tasks/",
+            params={"task_id": task_id, "page_size": 1},
+        )
+        tasks = payload.get("results")
+        if not isinstance(tasks, list):
+            raise PaperlessApiError(200, "Task response was invalid")
+        return {
+            "task_id": task_id,
+            "found": bool(tasks),
+            "task": tasks[0] if tasks else None,
+        }
+
+    async def list_active_tasks(self) -> JsonObject:
+        """Return pending and running Paperless background tasks."""
+        payload = await self.request("GET", "api/tasks/active/")
+        tasks = payload.get("result")
+        if not isinstance(tasks, list):
+            raise PaperlessApiError(200, "Active task response was invalid")
+        return {"count": len(tasks), "tasks": tasks}
+
     async def list_objects(
         self,
         object_type: str,

@@ -125,6 +125,29 @@ async def test_get_document_history_returns_a_compact_audit_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_task_queries_return_a_task_and_active_queue() -> None:
+    task_id = "3c6e91d1-6b5a-4bb1-aaf7-7cf9fd3aa4f2"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/paperless/api/tasks/":
+            assert request.url.params["task_id"] == task_id
+            assert request.url.params["page_size"] == "1"
+            return httpx.Response(200, json={"results": [{"id": task_id, "status": "SUCCESS"}]})
+        assert request.url.path == "/paperless/api/tasks/active/"
+        return httpx.Response(200, json=[{"id": task_id, "status": "STARTED"}])
+
+    async with PaperlessClient(
+        make_settings(),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        task = await client.get_task(task_id)
+        active = await client.list_active_tasks()
+
+    assert task == {"task_id": task_id, "found": True, "task": {"id": task_id, "status": "SUCCESS"}}
+    assert active == {"count": 1, "tasks": [{"id": task_id, "status": "STARTED"}]}
+
+
+@pytest.mark.asyncio
 async def test_update_is_blocked_in_read_only_mode() -> None:
     async with PaperlessClient(make_settings()) as client:
         with pytest.raises(ReadOnlyError, match="PAPERLESS_READ_ONLY=false"):
