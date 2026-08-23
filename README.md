@@ -16,10 +16,8 @@ MCP-capable clients to your own Paperless-ngx instance over `stdio`.
 - Create, rename, and configure organization objects.
 - Assign correspondents, document types, and storage paths in batches.
 - Add or remove tags without replacing unrelated tags.
-- Move documents only to Paperless' recoverable trash and restore them.
 - Update selected document metadata and create document notes.
 - Configure and verify a default intake workflow for new documents.
-- Block permanent document deletion and trash-emptying at the API-client level.
 
 ## Requirements
 
@@ -35,15 +33,14 @@ Install the desired release wheel as a local `uv` tool. Replace the version in
 the URL when installing a newer release:
 
 ```bash
-uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.8.4/local_paperless_ngx_mcp-0.8.4-py3-none-any.whl"
+uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.8.5/local_paperless_ngx_mcp-0.8.5-py3-none-any.whl"
 paperless-ngx-mcp setup
 ```
 
 The setup wizard asks for the URL and API token without echoing the token,
 validates the connection, and saves the configuration only after validation.
 Write tools are enabled by default; use `paperless-ngx-mcp setup --read-only`
-to keep the server in read-only mode. Permanent document deletion is unavailable
-in either mode.
+to keep the server in read-only mode.
 
 New configurations use REST API v10 by default. Persist another version during
 setup when needed:
@@ -256,16 +253,6 @@ uv run ruff format --check . \
 
 ## Security
 
-- The server does not listen on a network port; it uses `stdio` only.
-- API tokens are stored in the access-restricted user configuration or in
-  explicitly supplied process variables, never in an automatically loaded
-  `.env` file.
-- The wizard enables writes by default; use `setup --read-only` for read-only
-  operation.
-- Permanent document deletion and emptying Paperless trash are unavailable even
-  when writes are enabled.
-- Search results do not include full OCR text; it is returned only by
-  `get_document`, subject to a configurable size limit.
-
-See [SECURITY.md](SECURITY.md) for token-storage details and vulnerability
-reporting.
+The server uses `stdio` only, and search results omit full OCR text. See
+[SECURITY.md](SECURITY.md) for credential storage, mutation guarantees, and
+vulnerability reporting.

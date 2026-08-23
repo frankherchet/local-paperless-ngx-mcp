@@ -33,13 +33,7 @@ TRASH = ToolAnnotations(
     idempotentHint=False,
     openWorldHint=True,
 )
-OBJECT_BULK_WRITE = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=True,
-    idempotentHint=True,
-    openWorldHint=True,
-)
-WORKFLOW_DELETE = ToolAnnotations(
+DESTRUCTIVE_WRITE = ToolAnnotations(
     readOnlyHint=False,
     destructiveHint=True,
     idempotentHint=True,
@@ -94,10 +88,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         advanced accepts Paperless search syntax, and similar finds documents related
         to similar_to_id.
         """
-        if page < 1:
-            raise ValueError("page must be at least 1")
-        if not 1 <= page_size <= 100:
-            raise ValueError("page_size must be between 1 and 100")
+        _validate_page(page, page_size)
         if mode != "similar" and not query.strip():
             raise ValueError("query must not be empty")
 
@@ -181,10 +172,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         Supports tags, correspondents, document types, storage paths, custom fields,
         saved views, and workflows. Use pagination to inspect large collections.
         """
-        if page < 1:
-            raise ValueError("page must be at least 1")
-        if not 1 <= page_size <= 100:
-            raise ValueError("page_size must be between 1 and 100")
+        _validate_page(page, page_size)
 
         async with use_client() as paperless:
             return await paperless.list_objects(
@@ -197,10 +185,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
     @server.tool(annotations=READ_ONLY, tags={"paperless", "workflows"})
     async def list_workflows(page: int = 1, page_size: int = 100) -> JsonObject:
         """List Paperless workflows through GET /api/workflows/."""
-        if page < 1:
-            raise ValueError("page must be at least 1")
-        if not 1 <= page_size <= 100:
-            raise ValueError("page_size must be between 1 and 100")
+        _validate_page(page, page_size)
         async with use_client() as paperless:
             return await paperless.list_workflows(page=page, page_size=page_size)
 
@@ -238,7 +223,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         async with use_client() as paperless:
             return await paperless.update_workflow(workflow_id, changes)
 
-    @server.tool(annotations=WORKFLOW_DELETE, tags={"paperless", "workflows", "delete"})
+    @server.tool(annotations=DESTRUCTIVE_WRITE, tags={"paperless", "workflows", "delete"})
     async def delete_workflow(workflow_id: int, dry_run: bool = True) -> JsonObject:
         """Preview or delete one workflow; dry_run=true is the default.
 
@@ -308,10 +293,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         Returns compact document metadata without OCR content so an AI can inspect
         organization gaps without loading sensitive document text.
         """
-        if page < 1:
-            raise ValueError("page must be at least 1")
-        if not 1 <= page_size <= 100:
-            raise ValueError("page_size must be between 1 and 100")
+        _validate_page(page, page_size)
 
         async with use_client() as paperless:
             return await paperless.find_documents_missing_metadata(
@@ -338,10 +320,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         """Find compact document records assigned to one organization item."""
         if object_id < 1:
             raise ValueError("object_id must be positive")
-        if page < 1:
-            raise ValueError("page must be at least 1")
-        if not 1 <= page_size <= 100:
-            raise ValueError("page_size must be between 1 and 100")
+        _validate_page(page, page_size)
 
         async with use_client() as paperless:
             return await paperless.find_documents_by_metadata(
@@ -459,7 +438,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
             return await paperless.update_organization_item(object_type, item_id, changes)
 
     @server.tool(
-        annotations=OBJECT_BULK_WRITE,
+        annotations=DESTRUCTIVE_WRITE,
         tags={"paperless", "organization", "delete", "write"},
     )
     async def bulk_edit_objects(
@@ -555,10 +534,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
     @server.tool(annotations=READ_ONLY, tags={"paperless", "trash", "documents"})
     async def list_trashed_documents(page: int = 1, page_size: int = 20) -> JsonObject:
         """List compact records of documents currently in Paperless trash."""
-        if page < 1:
-            raise ValueError("page must be at least 1")
-        if not 1 <= page_size <= 100:
-            raise ValueError("page_size must be between 1 and 100")
+        _validate_page(page, page_size)
         async with use_client() as paperless:
             return await paperless.list_trashed_documents(page=page, page_size=page_size)
 
@@ -602,10 +578,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         """
         if document_id < 1:
             raise ValueError("document_id must be positive")
-        if page < 1:
-            raise ValueError("page must be at least 1")
-        if not 1 <= page_size <= 100:
-            raise ValueError("page_size must be between 1 and 100")
+        _validate_page(page, page_size)
         if operation == "list" and note is not None:
             raise ValueError("note is only valid when operation='create'")
         async with use_client() as paperless:
@@ -869,6 +842,13 @@ def _validate_workflow_entries(value: Any, field_name: str) -> None:
 def _validate_positive_ids(values: list[int], field_name: str) -> None:
     if any(not isinstance(value, int) or isinstance(value, bool) or value < 1 for value in values):
         raise ValueError(f"{field_name} must contain only positive IDs")
+
+
+def _validate_page(page: int, page_size: int) -> None:
+    if page < 1:
+        raise ValueError("page must be at least 1")
+    if not 1 <= page_size <= 100:
+        raise ValueError("page_size must be between 1 and 100")
 
 
 def _validate_matching_algorithm(value: int) -> None:

@@ -1,16 +1,8 @@
-"""Central safety policy for all Paperless mutations.
-
-The policy is deliberately independent from HTTP and FastMCP.  It classifies an
-outgoing request and validates the small set of destructive operations that this
-project permits.  Keeping these checks here makes the permanent-document-deletion
-ban testable without a running Paperless instance.
-"""
+"""Central safety policy for all Paperless mutations."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 
 
@@ -24,41 +16,6 @@ class ReadOnlyError(PaperlessError):
 
 class PermanentDeletionDisabled(PaperlessError):
     """The requested operation could permanently delete Paperless data."""
-
-
-class WriteMode(StrEnum):
-    """Whether the configured Paperless connection permits mutations."""
-
-    READ_ONLY = "read_only"
-    READ_WRITE = "read_write"
-
-
-class MutationOperation(StrEnum):
-    """The policy-relevant class of an outgoing Paperless request."""
-
-    READ = "read"
-    OTHER_WRITE = "other_write"
-    WORKFLOW_DELETE = "workflow_delete"
-    METADATA_DELETE = "metadata_delete"
-    DOCUMENT_BULK_EDIT = "document_bulk_edit"
-    TRASH_RESTORE = "trash_restore"
-    BLOCKED_DELETE = "blocked_delete"
-    BLOCKED_METADATA_DELETE = "blocked_metadata_delete"
-    BLOCKED_DOCUMENT_BULK_EDIT = "blocked_document_bulk_edit"
-    BLOCKED_TRASH_ACTION = "blocked_trash_action"
-
-
-@dataclass(frozen=True)
-class RequestMutation:
-    """Classification returned before a request reaches the network."""
-
-    operation: MutationOperation
-    method: str
-    path: str
-
-    @property
-    def is_mutation(self) -> bool:
-        return self.operation is not MutationOperation.READ
 
 
 WRITABLE_ORGANIZATION_OBJECT_TYPES = frozenset(
@@ -85,81 +42,19 @@ SAFE_BULK_DOCUMENT_METHODS = frozenset(
         "set_correspondent",
         "set_document_type",
         "set_storage_path",
-        "add_tag",
-        "remove_tag",
         "modify_tags",
-        "modify_custom_fields",
         "delete",  # Paperless moves documents to its reversible trash.
         "reprocess",  # Paperless applies its configured OCR processing mode.
     }
 )
 
 
-def write_mode(*, read_only: bool) -> WriteMode:
-    """Return the policy mode for the configured connection."""
-    return WriteMode.READ_ONLY if read_only else WriteMode.READ_WRITE
-
-
-def ensure_write_enabled(mode: WriteMode) -> None:
+def ensure_write_enabled(read_only: bool) -> None:
     """Reject every mutation while the connection is explicitly read-only."""
-    if mode is WriteMode.READ_ONLY:
+    if read_only:
         raise ReadOnlyError(
             "Write tools are disabled. Set PAPERLESS_READ_ONLY=false to enable updates."
         )
-
-
-def classify_request(
-    method: str,
-    path: str,
-    payload: Mapping[str, Any] | None,
-) -> RequestMutation:
-    """Classify a request according to the permanent-deletion safety policy."""
-    normalized_method = method.upper()
-    normalized_path = path.lstrip("/")
-
-    if normalized_method == "DELETE":
-        workflow_id = normalized_path.removeprefix("api/workflows/").removesuffix("/")
-        if (
-            normalized_path.startswith("api/workflows/")
-            and workflow_id.isdigit()
-            and int(workflow_id) > 0
-        ):
-            return RequestMutation(
-                MutationOperation.WORKFLOW_DELETE,
-                normalized_method,
-                normalized_path,
-            )
-        return RequestMutation(MutationOperation.BLOCKED_DELETE, normalized_method, normalized_path)
-
-    if normalized_method == "POST" and normalized_path == "api/bulk_edit_objects/":
-        if _is_allowed_metadata_deletion_payload(payload):
-            operation = MutationOperation.METADATA_DELETE
-        else:
-            operation = MutationOperation.BLOCKED_METADATA_DELETE
-        return RequestMutation(operation, normalized_method, normalized_path)
-
-    if normalized_method == "POST" and normalized_path == "api/trash/":
-        operation = (
-            MutationOperation.TRASH_RESTORE
-            if _payload_value(payload, "action") == "restore"
-            else MutationOperation.BLOCKED_TRASH_ACTION
-        )
-        return RequestMutation(operation, normalized_method, normalized_path)
-
-    if normalized_method == "POST" and normalized_path == "api/documents/bulk_edit/":
-        operation = (
-            MutationOperation.DOCUMENT_BULK_EDIT
-            if _payload_value(payload, "method") in SAFE_BULK_DOCUMENT_METHODS
-            else MutationOperation.BLOCKED_DOCUMENT_BULK_EDIT
-        )
-        return RequestMutation(operation, normalized_method, normalized_path)
-
-    operation = (
-        MutationOperation.READ
-        if normalized_method in {"GET", "HEAD", "OPTIONS"}
-        else MutationOperation.OTHER_WRITE
-    )
-    return RequestMutation(operation, normalized_method, normalized_path)
 
 
 def enforce_transport_mutation_policy(
@@ -169,38 +64,60 @@ def enforce_transport_mutation_policy(
     *,
     allow_workflow_deletion: bool = False,
     allow_metadata_deletion: bool = False,
-) -> RequestMutation:
-    """Classify and reject unsafe requests before they are sent to Paperless."""
-    request = classify_request(method, path, payload)
-    if request.operation is MutationOperation.WORKFLOW_DELETE and not allow_workflow_deletion:
-        raise PermanentDeletionDisabled(
-            "Workflow deletion must use delete_workflow after its dry-run preview."
+) -> bool:
+    """Reject unsafe requests and return whether the request mutates Paperless."""
+    normalized_method = method.upper()
+    normalized_path = path.lstrip("/")
+
+    if normalized_method == "DELETE":
+        workflow_id = normalized_path.removeprefix("api/workflows/").removesuffix("/")
+        is_workflow = (
+            normalized_path.startswith("api/workflows/")
+            and workflow_id.isdigit()
+            and int(workflow_id) > 0
         )
-    if request.operation is MutationOperation.METADATA_DELETE and not allow_metadata_deletion:
-        raise PermanentDeletionDisabled(
-            "Metadata deletion must use bulk_edit_objects after its reference-check preview."
-        )
-    if request.operation is MutationOperation.BLOCKED_DELETE:
-        raise PermanentDeletionDisabled(
-            "HTTP DELETE is disabled in this MCP server. "
-            "Documents can only be moved to Paperless trash; only workflow objects "
-            "may be deleted through delete_workflow."
-        )
-    if request.operation is MutationOperation.BLOCKED_METADATA_DELETE:
-        raise PermanentDeletionDisabled(
-            "Object bulk editing is restricted to deleting explicitly selected tags, "
-            "correspondents, document types, or storage paths."
-        )
-    if request.operation is MutationOperation.BLOCKED_TRASH_ACTION:
+        if is_workflow and not allow_workflow_deletion:
+            raise PermanentDeletionDisabled(
+                "Workflow deletion must use delete_workflow after its dry-run preview."
+            )
+        if not is_workflow:
+            raise PermanentDeletionDisabled(
+                "HTTP DELETE is disabled in this MCP server. "
+                "Documents can only be moved to Paperless trash; only workflow objects "
+                "may be deleted through delete_workflow."
+            )
+
+    if normalized_method == "POST" and normalized_path == "api/bulk_edit_objects/":
+        if not _is_allowed_metadata_deletion_payload(payload):
+            raise PermanentDeletionDisabled(
+                "Object bulk editing is restricted to deleting explicitly selected tags, "
+                "correspondents, document types, or storage paths."
+            )
+        if not allow_metadata_deletion:
+            raise PermanentDeletionDisabled(
+                "Metadata deletion must use bulk_edit_objects after its reference-check preview."
+            )
+
+    if (
+        normalized_method == "POST"
+        and normalized_path == "api/trash/"
+        and _payload_value(payload, "action") != "restore"
+    ):
         raise PermanentDeletionDisabled(
             "Only restoring documents is allowed on the Paperless trash endpoint. "
             "Emptying trash is permanently disabled."
         )
-    if request.operation is MutationOperation.BLOCKED_DOCUMENT_BULK_EDIT:
+
+    if (
+        normalized_method == "POST"
+        and normalized_path == "api/documents/bulk_edit/"
+        and _payload_value(payload, "method") not in SAFE_BULK_DOCUMENT_METHODS
+    ):
         raise PermanentDeletionDisabled(
             f"Bulk document method is not allowed: {_payload_value(payload, 'method')}"
         )
-    return request
+
+    return normalized_method not in {"GET", "HEAD", "OPTIONS"}
 
 
 def ensure_writable_organization_type(object_type: str) -> None:
