@@ -33,6 +33,7 @@ from paperless_ngx_mcp.mutation_policy import (
 from paperless_ngx_mcp.organization import (
     DOCUMENT_COUNT_FILTERS,
     ORGANIZATION_OBJECT_TYPES,
+    compact_organization_item,
     enrich_organization_item,
     summarize_organization,
 )
@@ -67,6 +68,23 @@ DOCUMENT_METADATA_FILTERS = {
     "storage_path": "storage_path__id",
     "custom_field": "custom_fields__id__in",
 }
+
+NAME_FILTER_OBJECT_TYPES = frozenset(
+    {"tags", "correspondents", "document_types", "storage_paths", "custom_fields"}
+)
+
+TASK_FIELDS = (
+    "id",
+    "task_id",
+    "task_type",
+    "status",
+    "date_created",
+    "date_started",
+    "date_done",
+    "duration_seconds",
+    "wait_time_seconds",
+    "related_document_ids",
+)
 
 
 class PaperlessApiError(PaperlessError):
@@ -197,7 +215,8 @@ class PaperlessClient:
                 raise ValueError("similar_to_id is required when mode='similar'")
             params["more_like_id"] = similar_to_id
         elif mode == "simple":
-            params["text"] = query
+            if query:
+                params["text"] = query
         elif mode == "title":
             params["title_search"] = query
         elif mode == "advanced":
@@ -206,12 +225,19 @@ class PaperlessClient:
             raise ValueError(f"Unsupported search mode: {mode}")
 
         payload = await self.request("GET", "api/documents/", params=params)
+        payload.pop("all", None)
+        corrected_query = payload.get("corrected_query")
+        if not corrected_query:
+            payload.pop("corrected_query", None)
         results = payload.get("results")
         if isinstance(results, list):
             payload["results"] = [
                 self._document_summary(item) for item in results if isinstance(item, dict)
             ]
-        return payload
+        result = self._compact_page(payload, page=page, page_size=page_size)
+        if corrected_query:
+            result["corrected_query"] = corrected_query
+        return result
 
     async def get_document(
         self,
@@ -236,13 +262,48 @@ class PaperlessClient:
             )
         return document
 
-    async def get_document_history(self, document_id: int) -> JsonObject:
-        """Return Paperless audit entries for one document."""
-        payload = await self.request("GET", f"api/documents/{document_id}/history/")
-        entries = payload.get("result")
-        if not isinstance(entries, list):
+    async def get_document_history(
+        self,
+        document_id: int,
+        *,
+        page: int = 1,
+        page_size: int = 10,
+        detail: str = "compact",
+    ) -> JsonObject:
+        """Return compact or full Paperless audit entries for one document."""
+        payload = await self.request(
+            "GET",
+            f"api/documents/{document_id}/history/",
+            params={"page": page, "page_size": page_size},
+        )
+        paginated_entries = payload.get("results")
+        legacy_entries = payload.get("result")
+        if isinstance(paginated_entries, list):
+            entries = paginated_entries
+            count = payload.get("count", len(entries))
+            has_next = bool(payload.get("next"))
+            has_previous = bool(payload.get("previous"))
+        elif isinstance(legacy_entries, list):
+            count = len(legacy_entries)
+            start = (page - 1) * page_size
+            entries = legacy_entries[start : start + page_size]
+            has_next = start + page_size < count
+            has_previous = page > 1
+        else:
             raise PaperlessApiError(200, "Document history response was invalid")
-        return {"document_id": document_id, "count": len(entries), "entries": entries}
+        if detail == "compact":
+            entries = [
+                self._compact_history_entry(entry) for entry in entries if isinstance(entry, dict)
+            ]
+        return {
+            "document_id": document_id,
+            "count": count,
+            "page": page,
+            "page_size": page_size,
+            "has_next": has_next,
+            "has_previous": has_previous,
+            "entries": entries,
+        }
 
     async def get_task(self, task_id: str) -> JsonObject:
         """Return one Paperless background task, when it still exists."""
@@ -251,13 +312,13 @@ class PaperlessClient:
             "api/tasks/",
             params={"task_id": task_id, "page_size": 1},
         )
-        tasks = payload.get("results")
+        tasks = payload.get("results", payload.get("result"))
         if not isinstance(tasks, list):
             raise PaperlessApiError(200, "Task response was invalid")
         return {
             "task_id": task_id,
             "found": bool(tasks),
-            "task": tasks[0] if tasks else None,
+            "task": self._compact_task(tasks[0]) if tasks and isinstance(tasks[0], dict) else None,
         }
 
     async def list_active_tasks(self) -> JsonObject:
@@ -266,7 +327,68 @@ class PaperlessClient:
         tasks = payload.get("result")
         if not isinstance(tasks, list):
             raise PaperlessApiError(200, "Active task response was invalid")
-        return {"count": len(tasks), "tasks": tasks}
+        return {
+            "count": len(tasks),
+            "tasks": [self._compact_task(task) for task in tasks if isinstance(task, dict)],
+        }
+
+    async def get_task_overview(self, *, days: int, include_active: bool) -> JsonObject:
+        """Return native task counts, recent aggregates, and compact active tasks."""
+        requests = [
+            self.request("GET", "api/tasks/status_counts/"),
+            self.request("GET", "api/tasks/summary/", params={"days": days}),
+        ]
+        if include_active:
+            requests.append(self.request("GET", "api/tasks/active/"))
+        counts, summary, *active_payload = await asyncio.gather(*requests)
+        by_type = summary.get("result")
+        if not isinstance(by_type, list):
+            raise PaperlessApiError(200, "Task summary response was invalid")
+        active = active_payload[0].get("result") if active_payload else []
+        if not isinstance(active, list):
+            raise PaperlessApiError(200, "Active task response was invalid")
+        return {
+            "days": days,
+            "status_counts": counts,
+            "by_type": by_type,
+            "active": [self._compact_task(task) for task in active if isinstance(task, dict)],
+        }
+
+    async def get_document_suggestions(self, document_id: int, *, source: str) -> JsonObject:
+        """Return native classifier and/or AI suggestions without applying them."""
+        sources = ("paperless", "ai") if source == "both" else (source,)
+        paths = {
+            "paperless": f"api/documents/{document_id}/suggestions/",
+            "ai": f"api/documents/{document_id}/ai_suggestions/",
+        }
+        responses = await asyncio.gather(
+            *(self.request("GET", paths[item]) for item in sources),
+            return_exceptions=True,
+        )
+        result: JsonObject = {"document_id": document_id}
+        unavailable: list[str] = []
+        for item, response in zip(sources, responses, strict=True):
+            if (
+                isinstance(response, PaperlessApiError)
+                and response.status_code in {400, 404, 501}
+                and source == "both"
+                and item == "ai"
+            ):
+                unavailable.append(item)
+            elif isinstance(response, BaseException):
+                raise response
+            else:
+                result[item] = response
+        if unavailable:
+            result["unavailable"] = unavailable
+        return result
+
+    async def get_archive_statistics(self) -> JsonObject:
+        """Return native Paperless archive statistics with empty values removed."""
+        result = self._prune_empty(await self.request("GET", "api/statistics/"))
+        if not isinstance(result, dict):
+            raise PaperlessApiError(200, "Statistics response was invalid")
+        return result
 
     async def list_objects(
         self,
@@ -275,33 +397,74 @@ class PaperlessClient:
         page: int,
         page_size: int,
         ordering: str,
+        detail: str = "full",
+        item_id: int | None = None,
+        name_contains: str | None = None,
     ) -> JsonObject:
         if object_type not in ORGANIZATION_OBJECT_TYPES:
             raise ValueError(f"Unsupported object type: {object_type}")
+        if item_id is not None:
+            item = await self.request("GET", f"api/{object_type}/{item_id}/")
+            enriched = enrich_organization_item(item)
+            return {
+                "count": 1,
+                "page": 1,
+                "page_size": 1,
+                "has_next": False,
+                "has_previous": False,
+                "results": [
+                    compact_organization_item(object_type, enriched)
+                    if detail == "compact"
+                    else enriched
+                ],
+            }
         params: dict[str, QueryValue] = {"page": page, "page_size": page_size}
-        if object_type not in {"saved_views", "workflows"}:
+        if object_type not in {"mail_rules", "saved_views", "workflows"}:
             params["ordering"] = ordering
+        if name_contains is not None:
+            if object_type not in NAME_FILTER_OBJECT_TYPES:
+                raise ValueError(f"Name filtering is not supported for {object_type}")
+            params["name__icontains"] = name_contains
         payload = await self.request(
             "GET",
             f"api/{object_type}/",
             params=params,
         )
         payload.pop("all", None)
-        return self._enrich_object_results(payload)
+        payload = self._enrich_object_results(payload)
+        results = payload.get("results")
+        if detail == "compact" and isinstance(results, list):
+            payload["results"] = [
+                compact_organization_item(object_type, item)
+                for item in results
+                if isinstance(item, dict)
+            ]
+        return self._compact_page(payload, page=page, page_size=page_size)
 
     async def get_organization_overview(self, *, sample_size: int) -> JsonObject:
-        object_types = sorted(ORGANIZATION_OBJECT_TYPES)
+        object_types = sorted(ORGANIZATION_OBJECT_TYPES - {"mail_rules"})
         object_results = await asyncio.gather(
             *(self._fetch_all_objects(object_type) for object_type in object_types)
         )
         count_results = await asyncio.gather(
             *(self._count_documents(filter_pair) for filter_pair in DOCUMENT_COUNT_FILTERS.values())
         )
-        return summarize_organization(
-            dict(zip(object_types, object_results, strict=True)),
+        objects = dict(zip(object_types, object_results, strict=True))
+        unavailable: list[str] = []
+        try:
+            objects["mail_rules"] = await self._fetch_all_objects("mail_rules")
+        except PaperlessApiError as exc:
+            if exc.status_code not in {403, 404}:
+                raise
+            unavailable.append("mail_rules")
+        result = summarize_organization(
+            objects,
             dict(zip(DOCUMENT_COUNT_FILTERS, count_results, strict=True)),
             sample_size=sample_size,
         )
+        if unavailable:
+            result["unavailable"] = unavailable
+        return result
 
     async def find_documents_missing_metadata(
         self,
@@ -333,8 +496,9 @@ class PaperlessClient:
             payload["results"] = [
                 self._document_summary(item) for item in results if isinstance(item, dict)
             ]
-        payload["missing_field"] = missing_field
-        return payload
+        result = self._compact_page(payload, page=page, page_size=page_size)
+        result["missing_field"] = missing_field
+        return result
 
     async def find_documents_by_metadata(
         self,
@@ -367,8 +531,9 @@ class PaperlessClient:
             payload["results"] = [
                 self._document_summary(item) for item in results if isinstance(item, dict)
             ]
-        payload["metadata"] = {"object_type": object_type, "object_id": object_id}
-        return payload
+        result = self._compact_page(payload, page=page, page_size=page_size)
+        result["metadata"] = {"object_type": object_type, "object_id": object_id}
+        return result
 
     async def create_organization_item(
         self,
@@ -391,7 +556,13 @@ class PaperlessClient:
 
     async def list_workflows(self, *, page: int, page_size: int) -> JsonObject:
         """List Paperless workflows through GET /api/workflows/."""
-        return await self.list_objects("workflows", page=page, page_size=page_size, ordering="name")
+        return await self.list_objects(
+            "workflows",
+            page=page,
+            page_size=page_size,
+            ordering="name",
+            detail="compact",
+        )
 
     async def get_workflow(self, workflow_id: int) -> JsonObject:
         """Retrieve one workflow through GET /api/workflows/{id}/."""
@@ -607,7 +778,7 @@ class PaperlessClient:
             payload["results"] = [
                 self._document_summary(item) for item in results if isinstance(item, dict)
             ]
-        return payload
+        return self._compact_page(payload, page=page, page_size=page_size)
 
     async def restore_documents_from_trash(self, document_ids: list[int]) -> JsonObject:
         return await self.request(
@@ -669,12 +840,13 @@ class PaperlessClient:
                 page=page,
                 page_size=100,
                 ordering="name",
+                detail="full",
             )
             results = payload.get("results")
             if not isinstance(results, list):
                 raise PaperlessApiError(200, f"Invalid paginated response for {object_type}")
             items.extend(item for item in results if isinstance(item, dict))
-            if not payload.get("next"):
+            if not payload.get("has_next"):
                 return items
             page += 1
             if page > 1_000:
@@ -748,6 +920,98 @@ class PaperlessClient:
                 enrich_organization_item(item) for item in results if isinstance(item, dict)
             ]
         return payload
+
+    @staticmethod
+    def _compact_page(payload: JsonObject, *, page: int, page_size: int) -> JsonObject:
+        return {
+            "count": payload.get("count", 0),
+            "page": page,
+            "page_size": page_size,
+            "has_next": bool(payload.get("next")),
+            "has_previous": bool(payload.get("previous")),
+            "results": payload.get("results", []),
+        }
+
+    @staticmethod
+    def _compact_history_entry(entry: JsonObject) -> JsonObject:
+        compact = {
+            field: entry[field]
+            for field in ("id", "timestamp", "action", "actor")
+            if field in entry
+        }
+        changes = entry.get("changes")
+        if isinstance(changes, dict):
+            compact["changes"] = {
+                field: PaperlessClient._content_change_summary(value)
+                if field == "content"
+                else value
+                for field, value in changes.items()
+            }
+        return compact
+
+    @staticmethod
+    def _content_change_summary(value: Any) -> JsonObject:
+        summary: JsonObject = {"changed": True}
+        if isinstance(value, list) and len(value) == 2:
+            before, after = value
+            if isinstance(before, str):
+                summary["before_chars"] = len(before)
+            if isinstance(after, str):
+                summary["after_chars"] = len(after)
+        elif isinstance(value, dict):
+            for key, label in (
+                ("old", "before_chars"),
+                ("old_value", "before_chars"),
+                ("new", "after_chars"),
+                ("new_value", "after_chars"),
+            ):
+                text = value.get(key)
+                if isinstance(text, str):
+                    summary[label] = len(text)
+        elif isinstance(value, str):
+            summary["chars"] = len(value)
+        return summary
+
+    @staticmethod
+    def _compact_task(task: JsonObject) -> JsonObject:
+        compact = {field: task[field] for field in TASK_FIELDS if field in task}
+        if "task_type" not in compact:
+            task_type = task.get("task_name", task.get("type"))
+            if task_type is not None:
+                compact["task_type"] = task_type
+        if "related_document_ids" not in compact:
+            related = task.get("related_document")
+            if isinstance(related, int):
+                compact["related_document_ids"] = [related]
+            elif isinstance(related, list):
+                compact["related_document_ids"] = related
+        result_data = task.get("result_data", task.get("result"))
+        if isinstance(result_data, dict):
+            important = {
+                key: result_data[key]
+                for key in ("error", "message", "document_id")
+                if key in result_data
+            }
+            if important:
+                compact["result"] = important
+        elif isinstance(result_data, str) and result_data:
+            compact["result"] = result_data[:500]
+            if len(result_data) > 500:
+                compact["result_truncated"] = True
+        return compact
+
+    @staticmethod
+    def _prune_empty(value: Any) -> Any:
+        if isinstance(value, dict):
+            result: JsonObject = {}
+            for key, item in value.items():
+                compact = PaperlessClient._prune_empty(item)
+                if compact not in (None, "", [], {}):
+                    result[key] = compact
+            return result
+        if isinstance(value, list):
+            return [PaperlessClient._prune_empty(item) for item in value]
+        return value
 
     @staticmethod
     def _document_summary(document: JsonObject) -> JsonObject:

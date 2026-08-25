@@ -11,7 +11,9 @@ MCP-capable clients to your own Paperless-ngx instance over `stdio`.
   similarity.
 - Retrieve document metadata, OCR text, and optional file checksums.
 - List tags, correspondents, document types, storage paths, custom fields,
-  saved views, and workflows with pagination.
+  mail rules, saved views, and workflows with compact pagination.
+- Compare Paperless classifier and AI suggestions without applying them.
+- Inspect compact task-queue aggregates and native archive statistics.
 - Assess organization quality across the archive and find missing metadata.
 - Create, rename, and configure organization objects.
 - Assign correspondents, document types, and storage paths in batches.
@@ -33,7 +35,7 @@ Install the desired release wheel as a local `uv` tool. Replace the version in
 the URL when installing a newer release:
 
 ```bash
-uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.8.5/local_paperless_ngx_mcp-0.8.5-py3-none-any.whl"
+uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.9.0/local_paperless_ngx_mcp-0.9.0-py3-none-any.whl"
 paperless-ngx-mcp setup
 ```
 
@@ -41,6 +43,8 @@ The setup wizard asks for the URL and API token without echoing the token,
 validates the connection, and saves the configuration only after validation.
 Write tools are enabled by default; use `paperless-ngx-mcp setup --read-only`
 to keep the server in read-only mode.
+
+See [CHANGELOG.md](CHANGELOG.md) for release details and upgrade-relevant changes.
 
 New configurations use REST API v10 by default. Persist another version during
 setup when needed:
@@ -120,12 +124,15 @@ explicitly.
 | Tool | Purpose | Writes to Paperless |
 | --- | --- | --- |
 | `paperless_status` | Check connectivity, versions, and document count | No |
-| `search_documents` | Find documents in four search modes | No |
+| `search_documents` | Find documents in four modes, or list recent documents with an empty simple query | No |
 | `get_document` | Retrieve document metadata, OCR text, and optional file checksums | No |
-| `get_document_history` | Retrieve audit-history entries for one document | No |
+| `get_document_history` | Retrieve compact, paginated audit history; full changes are opt-in | No |
+| `get_document_suggestions` | Read classifier and optional AI suggestions | No |
 | `get_task` | Retrieve one Paperless background task by ID | No |
 | `list_active_tasks` | List pending and running background tasks | No |
-| `list_metadata` | List organization objects and workflows | No |
+| `get_task_overview` | Return task status counts, recent aggregates, and active tasks | No |
+| `get_archive_statistics` | Return native Paperless archive statistics | No |
+| `list_metadata` | List compact organization objects, mail rules, and workflows; full detail is opt-in | No |
 | `list_workflows` / `get_workflow` | Paginate or retrieve nested workflows | No |
 | `create_workflow` / `update_workflow` | Create or patch nested Paperless workflows | Yes |
 | `delete_workflow` | Preview or, after approval, delete a workflow | Optional |
@@ -198,9 +205,12 @@ The MCP marks this bulk tool as destructive. For `operation=delete`, it allows
 only the four organization-object types above. It cannot delete documents,
 custom fields, saved views, or other object types.
 
-`list_metadata(object_type="workflows")` returns full triggers and actions for
-manual review. The deletion guard repeats the same workflow-reference checks on
-the server. If workflows cannot be read, the check fails and nothing is deleted.
+`list_metadata(object_type="workflows", detail="full")` returns full triggers
+and actions for manual review. The deletion guard repeats the same
+workflow-reference checks on the server. If workflows cannot be read, the check
+fails and nothing is deleted. Mail rules are exposed read-only and compactly;
+mail accounts are intentionally unavailable because their REST records can
+contain credentials.
 
 For safe duplicate checking, call `get_document` with
 `include_file_metadata=true`. Its `file_metadata` response includes
@@ -221,6 +231,14 @@ MCP-capable chat is:
 For detailed review, the model can paginate through each object type using
 `list_metadata`. `find_documents_missing_metadata` provides compact document
 metadata for missing assignments without sending OCR text.
+
+MCP responses favor structured, compact data. Lists omit Paperless pagination
+URLs and its potentially large `all` ID collection. Metadata defaults to
+`detail="compact"`; use `detail="full"` only for a record that needs exact REST
+fields. Document history defaults to ten entries per page and replaces OCR text
+changes with before/after character counts. The structured result is not
+duplicated as JSON in the MCP text block, so clients must support standard MCP
+`structuredContent` responses.
 
 Recommended workflow:
 

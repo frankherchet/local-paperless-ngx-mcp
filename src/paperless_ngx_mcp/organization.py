@@ -16,6 +16,7 @@ ORGANIZATION_OBJECT_TYPES = frozenset(
         "document_types",
         "storage_paths",
         "custom_fields",
+        "mail_rules",
         "saved_views",
         "workflows",
     }
@@ -63,6 +64,93 @@ def enrich_organization_item(item: JsonObject) -> JsonObject:
     return enriched
 
 
+def compact_organization_item(object_type: str, item: JsonObject) -> JsonObject:
+    """Keep only fields an AI needs for organization decisions."""
+    fields = {
+        "tags": (
+            "id",
+            "name",
+            "document_count",
+            "parent",
+            "is_inbox_tag",
+            "match",
+            "matching_algorithm_label",
+            "is_insensitive",
+        ),
+        "correspondents": (
+            "id",
+            "name",
+            "document_count",
+            "last_correspondence",
+            "match",
+            "matching_algorithm_label",
+            "is_insensitive",
+        ),
+        "document_types": (
+            "id",
+            "name",
+            "document_count",
+            "match",
+            "matching_algorithm_label",
+            "is_insensitive",
+        ),
+        "storage_paths": (
+            "id",
+            "name",
+            "path",
+            "document_count",
+            "match",
+            "matching_algorithm_label",
+            "is_insensitive",
+        ),
+        "custom_fields": ("id", "name", "data_type", "document_count"),
+        "saved_views": (
+            "id",
+            "name",
+            "filter_rules",
+            "show_on_dashboard",
+            "show_in_sidebar",
+        ),
+        "mail_rules": (
+            "id",
+            "name",
+            "account",
+            "enabled",
+            "folder",
+            "filter_from",
+            "filter_to",
+            "filter_subject",
+            "filter_body",
+            "filter_attachment_filename_include",
+            "filter_attachment_filename_exclude",
+            "action",
+            "action_parameter",
+            "assign_title_from",
+            "assign_tags",
+            "assign_correspondent_from",
+            "assign_correspondent",
+            "assign_document_type",
+            "assign_owner_from_rule",
+            "order",
+            "stop_processing",
+        ),
+        "workflows": ("id", "name", "order", "enabled"),
+    }[object_type]
+    compact = {
+        field: item[field]
+        for field in fields
+        if field in item and item[field] not in (None, "", [], {})
+    }
+    if object_type == "tags":
+        compact["parent"] = item.get("parent")
+    elif object_type == "workflows":
+        triggers = item.get("triggers")
+        actions = item.get("actions")
+        compact["trigger_count"] = len(triggers) if isinstance(triggers, list) else 0
+        compact["action_count"] = len(actions) if isinstance(actions, list) else 0
+    return compact
+
+
 def summarize_organization(
     objects: dict[str, list[JsonObject]],
     document_counts: dict[str, int],
@@ -91,21 +179,6 @@ def summarize_organization(
             },
         },
         "organization": summaries,
-        "interpretation_notes": [
-            (
-                "Unused and single-document entries are review candidates, "
-                "not automatic deletion candidates."
-            ),
-            (
-                "Normalized duplicate groups differ only by case, spacing, "
-                "punctuation, or Unicode form."
-            ),
-            (
-                "Document counts can overlap because one document may have "
-                "multiple tags or custom fields."
-            ),
-            "Use list_metadata to inspect complete records before recommending structural changes.",
-        ],
     }
 
 
@@ -164,6 +237,9 @@ def _summarize_object_type(
     elif object_type == "saved_views":
         result["shown_on_dashboard"] = sum(item.get("show_on_dashboard") is True for item in items)
         result["shown_in_sidebar"] = sum(item.get("show_in_sidebar") is True for item in items)
+    elif object_type == "mail_rules":
+        result["enabled"] = sum(item.get("enabled") is True for item in items)
+        result["disabled"] = sum(item.get("enabled") is False for item in items)
 
     return result
 

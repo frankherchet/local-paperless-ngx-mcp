@@ -13,6 +13,7 @@ from mcp.types import ToolAnnotations
 from paperless_ngx_mcp import __version__
 from paperless_ngx_mcp.client import JsonObject, PaperlessClient
 from paperless_ngx_mcp.config import get_settings
+from paperless_ngx_mcp.responses import CompactToolResultMiddleware
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True)
 WRITE = ToolAnnotations(
@@ -46,18 +47,13 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
     server = FastMCP(
         name="Paperless-ngx",
         instructions=(
-            "Search and inspect the user's local Paperless-ngx archive and organization. "
-            "Use get_organization_overview before assessing tags, correspondents, document "
-            "types, storage paths, custom fields, saved views, or workflows. Treat unused "
-            "entries as review candidates. Use bulk_edit_objects with dry_run=true before deleting "
-            "organization items, show its reference-check preview, and obtain explicit user "
-            "approval before repeating with dry_run=false. Read tools are safe; writes are "
-            "disabled by default. Permanent document deletion is unavailable: the server never "
-            "issues HTTP DELETE for documents and never empties Paperless trash. Workflow "
-            "deletion is available only through delete_workflow."
+            "Inspect Paperless with compact read tools. Writes respect read-only mode; "
+            "permanent document deletion and emptying trash are unavailable. Preview metadata "
+            "or workflow deletion and obtain explicit approval before execution."
         ),
         version=__version__,
     )
+    server.add_middleware(CompactToolResultMiddleware())
 
     @asynccontextmanager
     async def use_client() -> AsyncIterator[PaperlessClient]:
@@ -89,8 +85,8 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         to similar_to_id.
         """
         _validate_page(page, page_size)
-        if mode != "similar" and not query.strip():
-            raise ValueError("query must not be empty")
+        if mode in {"title", "advanced"} and not query.strip():
+            raise ValueError(f"query must not be empty when mode={mode!r}")
 
         async with use_client() as paperless:
             return await paperless.search_documents(
@@ -128,15 +124,26 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
             )
 
     @server.tool(annotations=READ_ONLY, tags={"paperless", "documents", "history"})
-    async def get_document_history(document_id: int) -> JsonObject:
-        """Return the audit history for one document, newest entry first.
+    async def get_document_history(
+        document_id: int,
+        page: int = 1,
+        page_size: int = 10,
+        detail: Literal["compact", "full"] = "compact",
+    ) -> JsonObject:
+        """Return paginated audit history, newest first; OCR diffs are compact by default.
 
         Paperless must have audit logging enabled and the configured token needs
         permission to view audit-log entries.
         """
         _validate_positive_ids([document_id], "document_id")
+        _validate_page(page, page_size)
         async with use_client() as paperless:
-            return await paperless.get_document_history(document_id)
+            return await paperless.get_document_history(
+                document_id,
+                page=page,
+                page_size=page_size,
+                detail=detail,
+            )
 
     @server.tool(annotations=READ_ONLY, tags={"paperless", "tasks"})
     async def get_task(task_id: str) -> JsonObject:
@@ -148,9 +155,33 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
 
     @server.tool(annotations=READ_ONLY, tags={"paperless", "tasks"})
     async def list_active_tasks() -> JsonObject:
-        """List pending and running Paperless background tasks."""
+        """List compact pending and running Paperless background tasks."""
         async with use_client() as paperless:
             return await paperless.list_active_tasks()
+
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "tasks", "analysis"})
+    async def get_task_overview(days: int = 30, include_active: bool = True) -> JsonObject:
+        """Return native task status counts, aggregates, and optional active tasks."""
+        if not 1 <= days <= 365:
+            raise ValueError("days must be between 1 and 365")
+        async with use_client() as paperless:
+            return await paperless.get_task_overview(days=days, include_active=include_active)
+
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "documents", "suggestions"})
+    async def get_document_suggestions(
+        document_id: int,
+        source: Literal["paperless", "ai", "both"] = "both",
+    ) -> JsonObject:
+        """Read Paperless classifier and/or AI suggestions without applying changes."""
+        _validate_positive_ids([document_id], "document_id")
+        async with use_client() as paperless:
+            return await paperless.get_document_suggestions(document_id, source=source)
+
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "statistics", "analysis"})
+    async def get_archive_statistics() -> JsonObject:
+        """Return native Paperless archive statistics with empty values removed."""
+        async with use_client() as paperless:
+            return await paperless.get_archive_statistics()
 
     @server.tool(annotations=READ_ONLY, tags={"paperless", "metadata"})
     async def list_metadata(
@@ -160,19 +191,28 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
             "document_types",
             "storage_paths",
             "custom_fields",
+            "mail_rules",
             "saved_views",
             "workflows",
         ],
         page: int = 1,
-        page_size: int = 100,
+        page_size: int = 25,
         ordering: str = "name",
+        detail: Literal["compact", "full"] = "compact",
+        item_id: int | None = None,
+        name_contains: str | None = None,
     ) -> JsonObject:
-        """List organization records with full metadata and human-readable matching modes.
+        """List compact organization records or explicitly request full REST details.
 
         Supports tags, correspondents, document types, storage paths, custom fields,
-        saved views, and workflows. Use pagination to inspect large collections.
+        mail rules, saved views, and workflows. item_id retrieves one exact record;
+        name_contains is supported by Paperless taxonomy endpoints.
         """
         _validate_page(page, page_size)
+        if item_id is not None:
+            _validate_positive_ids([item_id], "item_id")
+        if name_contains is not None and not name_contains.strip():
+            raise ValueError("name_contains must not be empty")
 
         async with use_client() as paperless:
             return await paperless.list_objects(
@@ -180,6 +220,9 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
                 page=page,
                 page_size=page_size,
                 ordering=ordering,
+                detail=detail,
+                item_id=item_id,
+                name_contains=name_contains.strip() if name_contains is not None else None,
             )
 
     @server.tool(annotations=READ_ONLY, tags={"paperless", "workflows"})
@@ -261,7 +304,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
             return await paperless.verify_default_intake()
 
     @server.tool(annotations=READ_ONLY, tags={"paperless", "organization", "analysis"})
-    async def get_organization_overview(sample_size: int = 15) -> JsonObject:
+    async def get_organization_overview(sample_size: int = 5) -> JsonObject:
         """Summarize Paperless organization quality across the complete archive.
 
         Returns usage counts, unused and single-document examples, normalized duplicate
