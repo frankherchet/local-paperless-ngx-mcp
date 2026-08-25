@@ -1,6 +1,7 @@
 from paperless_ngx_mcp.organization import (
     DOCUMENT_COUNT_FILTERS,
     ORGANIZATION_OBJECT_TYPES,
+    compact_organization_item,
     enrich_organization_item,
     summarize_organization,
 )
@@ -23,11 +24,37 @@ def test_organization_analysis_constants_describe_the_client_input_contract() ->
         "document_types",
         "storage_paths",
         "custom_fields",
+        "mail_rules",
         "saved_views",
         "workflows",
     } == ORGANIZATION_OBJECT_TYPES
     assert DOCUMENT_COUNT_FILTERS["total"] is None
     assert DOCUMENT_COUNT_FILTERS["without_tags"] == ("is_tagged", False)
+
+
+def test_compact_organization_item_drops_serializer_noise() -> None:
+    item = enrich_organization_item(
+        {
+            "id": 4,
+            "name": "Bank",
+            "document_count": 12,
+            "matching_algorithm": 6,
+            "owner": 1,
+            "permissions": {"view": [1]},
+        }
+    )
+
+    assert compact_organization_item("correspondents", item) == {
+        "id": 4,
+        "name": "Bank",
+        "document_count": 12,
+        "matching_algorithm_label": "automatic",
+    }
+    assert compact_organization_item("tags", {"id": 5, "name": "Root", "parent": None}) == {
+        "id": 5,
+        "name": "Root",
+        "parent": None,
+    }
 
 
 def test_summarize_organization_keeps_compact_analysis_shape() -> None:

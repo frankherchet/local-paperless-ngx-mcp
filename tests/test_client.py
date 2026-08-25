@@ -62,6 +62,10 @@ async def test_search_documents_sends_auth_and_summarizes_results() -> None:
 
     assert result == {
         "count": 1,
+        "page": 1,
+        "page_size": 20,
+        "has_next": False,
+        "has_previous": False,
         "results": [
             {
                 "id": 7,
@@ -71,6 +75,26 @@ async def test_search_documents_sends_auth_and_summarizes_results() -> None:
             }
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_empty_simple_search_lists_documents_without_a_text_filter() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "text" not in request.url.params
+        return httpx.Response(200, json={"count": 0, "all": [], "results": []})
+
+    async with PaperlessClient(make_settings(), transport=httpx.MockTransport(handler)) as client:
+        result = await client.search_documents(
+            query="",
+            mode="simple",
+            page=1,
+            page_size=20,
+            ordering="-created",
+            similar_to_id=None,
+        )
+
+    assert result["count"] == 0
+    assert "all" not in result
 
 
 @pytest.mark.asyncio
@@ -100,17 +124,27 @@ async def test_get_document_history_returns_a_compact_audit_result() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
         assert request.url.path == "/paperless/api/documents/5/history/"
+        assert request.url.params["page"] == "1"
+        assert request.url.params["page_size"] == "10"
         return httpx.Response(
             200,
-            json=[
-                {
-                    "id": 9,
-                    "timestamp": "2026-08-23T10:00:00Z",
-                    "action": "Updated",
-                    "changes": {"title": ["Old", "New"]},
-                    "actor": {"id": 1, "username": "frank"},
-                }
-            ],
+            json={
+                "count": 2,
+                "next": "http://paperless.test/api/documents/5/history/?page=2",
+                "previous": None,
+                "results": [
+                    {
+                        "id": 9,
+                        "timestamp": "2026-08-23T10:00:00Z",
+                        "action": "Updated",
+                        "changes": {
+                            "title": ["Old", "New"],
+                            "content": ["old OCR", "new OCR text"],
+                        },
+                        "actor": {"id": 1, "username": "frank"},
+                    }
+                ],
+            },
         )
 
     async with PaperlessClient(
@@ -120,8 +154,51 @@ async def test_get_document_history_returns_a_compact_audit_result() -> None:
         result = await client.get_document_history(5)
 
     assert result["document_id"] == 5
-    assert result["count"] == 1
-    assert result["entries"][0]["changes"] == {"title": ["Old", "New"]}
+    assert result["count"] == 2
+    assert result["has_next"] is True
+    assert result["entries"][0]["changes"] == {
+        "title": ["Old", "New"],
+        "content": {"changed": True, "before_chars": 7, "after_chars": 12},
+    }
+    assert "old OCR" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_get_document_history_full_preserves_legacy_raw_changes() -> None:
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            json=[{"id": 1, "changes": {"content": ["before", "after"]}}],
+        )
+    )
+    async with PaperlessClient(make_settings(), transport=transport) as client:
+        result = await client.get_document_history(5, detail="full")
+
+    assert result["entries"][0]["changes"]["content"] == ["before", "after"]
+
+
+@pytest.mark.asyncio
+async def test_compact_history_has_a_bounded_response_for_large_ocr_diffs() -> None:
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            json=[
+                {
+                    "id": item,
+                    "changes": {"content": ["before" * 10_000, "after" * 10_000]},
+                }
+                for item in range(20)
+            ],
+        )
+    )
+    async with PaperlessClient(make_settings(), transport=transport) as client:
+        result = await client.get_document_history(5)
+
+    assert result["count"] == 20
+    assert len(result["entries"]) == 10
+    assert result["has_next"] is True
+    assert len(json.dumps(result)) < 3_000
+    assert "beforebefore" not in json.dumps(result)
 
 
 @pytest.mark.asyncio
@@ -145,6 +222,107 @@ async def test_task_queries_return_a_task_and_active_queue() -> None:
 
     assert task == {"task_id": task_id, "found": True, "task": {"id": task_id, "status": "SUCCESS"}}
     assert active == {"count": 1, "tasks": [{"id": task_id, "status": "STARTED"}]}
+
+
+@pytest.mark.asyncio
+async def test_task_queries_normalize_legacy_api_fields() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/paperless/api/tasks/"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "task-1",
+                    "task_name": "reprocess_document",
+                    "status": "FAILURE",
+                    "related_document": 42,
+                    "result": "failed OCR",
+                    "input_data": "must stay hidden",
+                }
+            ],
+        )
+
+    async with PaperlessClient(make_settings(), transport=httpx.MockTransport(handler)) as client:
+        result = await client.get_task("task-1")
+
+    assert result["task"] == {
+        "id": "task-1",
+        "task_type": "reprocess_document",
+        "status": "FAILURE",
+        "related_document_ids": [42],
+        "result": "failed OCR",
+    }
+
+
+@pytest.mark.asyncio
+async def test_task_overview_uses_native_aggregates_and_compacts_active_tasks() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/status_counts/"):
+            return httpx.Response(200, json={"all": 4, "in_progress": 1})
+        if request.url.path.endswith("/summary/"):
+            assert request.url.params["days"] == "7"
+            return httpx.Response(
+                200,
+                json=[{"task_type": "reprocess_document", "total_count": 4}],
+            )
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "task_id": "task-1",
+                    "task_type": "reprocess_document",
+                    "status": "started",
+                    "input_data": "large internal input",
+                    "related_document_ids": [5],
+                }
+            ],
+        )
+
+    async with PaperlessClient(make_settings(), transport=httpx.MockTransport(handler)) as client:
+        result = await client.get_task_overview(days=7, include_active=True)
+
+    assert result["status_counts"] == {"all": 4, "in_progress": 1}
+    assert result["by_type"] == [{"task_type": "reprocess_document", "total_count": 4}]
+    assert result["active"] == [
+        {
+            "task_id": "task-1",
+            "task_type": "reprocess_document",
+            "status": "started",
+            "related_document_ids": [5],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_document_suggestions_reads_both_sources_and_tolerates_missing_ai() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/suggestions/"):
+            return httpx.Response(200, json={"tags": [2], "dates": ["2026-08-01"]})
+        assert request.url.path.endswith("/ai_suggestions/")
+        return httpx.Response(400, json={"detail": "AI suggestions disabled"})
+
+    async with PaperlessClient(make_settings(), transport=httpx.MockTransport(handler)) as client:
+        result = await client.get_document_suggestions(5, source="both")
+
+    assert result == {
+        "document_id": 5,
+        "paperless": {"tags": [2], "dates": ["2026-08-01"]},
+        "unavailable": ["ai"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_archive_statistics_prunes_empty_values_without_dropping_zeroes() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json={"documents_total": 12, "inbox": 0, "empty": [], "nested": {"unused": None}},
+        )
+    )
+    async with PaperlessClient(make_settings(), transport=transport) as client:
+        result = await client.get_archive_statistics()
+
+    assert result == {"documents_total": 12, "inbox": 0}
 
 
 @pytest.mark.asyncio
@@ -204,6 +382,7 @@ async def test_get_document_can_include_file_checksums() -> None:
 async def test_list_objects_removes_all_ids_and_labels_matching_algorithm() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/paperless/api/correspondents/"
+        assert request.url.params["name__icontains"] == "Bank"
         return httpx.Response(
             200,
             json={
@@ -228,10 +407,55 @@ async def test_list_objects_removes_all_ids_and_labels_matching_algorithm() -> N
             page=1,
             page_size=100,
             ordering="name",
+            name_contains="Bank",
         )
 
     assert "all" not in result
     assert result["results"][0]["matching_algorithm_label"] == "automatic"
+
+
+@pytest.mark.asyncio
+async def test_list_objects_compacts_mail_rules_and_supports_full_detail_lookup() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/mail_rules/"):
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "results": [
+                        {
+                            "id": 3,
+                            "name": "Invoices",
+                            "enabled": True,
+                            "filter_subject": "Invoice",
+                            "assign_tags": [7],
+                            "owner": 1,
+                            "user_can_change": True,
+                        }
+                    ],
+                },
+            )
+        assert request.url.path.endswith("/tags/9/")
+        return httpx.Response(200, json={"id": 9, "name": "Tax", "slug": "tax"})
+
+    async with PaperlessClient(make_settings(), transport=httpx.MockTransport(handler)) as client:
+        rules = await client.list_objects(
+            "mail_rules", page=1, page_size=25, ordering="name", detail="compact"
+        )
+        tag = await client.list_objects(
+            "tags", page=1, page_size=25, ordering="name", detail="full", item_id=9
+        )
+
+    assert rules["results"] == [
+        {
+            "id": 3,
+            "name": "Invoices",
+            "enabled": True,
+            "filter_subject": "Invoice",
+            "assign_tags": [7],
+        }
+    ]
+    assert tag["results"] == [{"id": 9, "name": "Tax", "slug": "tax"}]
 
 
 @pytest.mark.asyncio
@@ -273,6 +497,7 @@ async def test_organization_overview_fetches_all_pages_and_assignment_counts() -
         "correspondents": [{"id": 1, "name": "Bank", "document_count": 10}],
         "custom_fields": [{"id": 2, "name": "Account", "document_count": 5, "data_type": "string"}],
         "document_types": [{"id": 3, "name": "Invoice", "document_count": 8}],
+        "mail_rules": [{"id": 9, "name": "Invoices", "enabled": True}],
         "saved_views": [
             {
                 "id": 4,
@@ -355,6 +580,22 @@ async def test_organization_overview_fetches_all_pages_and_assignment_counts() -
     assert (
         result["organization"]["tags"]["normalized_duplicate_groups"][0]["normalized_name"] == "tax"
     )
+
+
+@pytest.mark.asyncio
+async def test_organization_overview_survives_unavailable_mail_rules() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/paperless/api/documents/":
+            return httpx.Response(200, json={"count": 0, "results": []})
+        if request.url.path == "/paperless/api/mail_rules/":
+            return httpx.Response(403, json={"detail": "Forbidden"})
+        return httpx.Response(200, json={"count": 0, "next": None, "results": []})
+
+    async with PaperlessClient(make_settings(), transport=httpx.MockTransport(handler)) as client:
+        result = await client.get_organization_overview(sample_size=1)
+
+    assert result["unavailable"] == ["mail_rules"]
+    assert "mail_rules" not in result["organization"]
 
 
 @pytest.mark.asyncio

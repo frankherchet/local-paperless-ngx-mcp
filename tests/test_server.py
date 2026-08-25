@@ -1,6 +1,10 @@
+import httpx
 import pytest
 from fastmcp import Client
+from mcp.types import TextContent
 
+from paperless_ngx_mcp.client import PaperlessClient
+from paperless_ngx_mcp.config import Settings
 from paperless_ngx_mcp.server import _validate_document_changes, create_server
 
 
@@ -15,6 +19,9 @@ async def test_server_exposes_expected_tools() -> None:
         "get_document_history",
         "get_task",
         "list_active_tasks",
+        "get_task_overview",
+        "get_document_suggestions",
+        "get_archive_statistics",
         "list_metadata",
         "list_workflows",
         "get_workflow",
@@ -58,6 +65,12 @@ async def test_server_exposes_expected_tools() -> None:
     history_tool = next(tool for tool in tools if tool.name == "get_document_history")
     assert history_tool.annotations is not None
     assert history_tool.annotations.readOnlyHint is True
+    assert set(history_tool.inputSchema["properties"]) == {
+        "document_id",
+        "page",
+        "page_size",
+        "detail",
+    }
 
     task_tool = next(tool for tool in tools if tool.name == "get_task")
     assert task_tool.annotations is not None
@@ -89,6 +102,47 @@ async def test_server_exposes_expected_tools() -> None:
     workflow_delete_tool = next(tool for tool in tools if tool.name == "delete_workflow")
     assert workflow_delete_tool.annotations is not None
     assert workflow_delete_tool.annotations.destructiveHint is True
+
+
+async def test_server_sends_structured_data_without_duplicate_json_text() -> None:
+    settings = Settings.model_validate(
+        {
+            "PAPERLESS_URL": "http://paperless.test",
+            "PAPERLESS_TOKEN": "test-token",
+        }
+    )
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            json={
+                "count": 1,
+                "results": [{"id": 7, "title": "Invoice", "content": "secret OCR"}],
+            },
+        )
+    )
+    paperless = PaperlessClient(settings, transport=transport)
+    async with paperless, Client(create_server(paperless)) as client:
+        result = await client.call_tool("search_documents", {"query": "invoice"})
+
+    assert result.structured_content is not None
+    assert result.structured_content["results"] == [{"id": 7, "title": "Invoice"}]
+    assert isinstance(result.content[0], TextContent)
+    assert result.content[0].text == "Structured Paperless result attached."
+    assert "Invoice" not in result.content[0].text
+
+
+async def test_response_middleware_preserves_tool_errors() -> None:
+    async with Client(create_server()) as client:
+        result = await client.call_tool(
+            "search_documents",
+            {"mode": "title", "query": ""},
+            raise_on_error=False,
+        )
+
+    assert result.is_error is True
+    assert result.structured_content is None
+    assert isinstance(result.content[0], TextContent)
+    assert "query must not be empty" in result.content[0].text
 
 
 def test_document_patch_validation_supports_explicit_null_and_full_tag_list() -> None:

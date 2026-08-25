@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "local-paperless-ngx-mcp"
-version = "0.8.5"
+version = "0.9.0"
 description = "Local FastMCP server for a Paperless-ngx instance"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,6 +42,7 @@ paperless-ngx-mcp = "paperless_ngx_mcp.cli:main"
 Homepage = "https://github.com/frankherchet/local-paperless-ngx-mcp"
 Repository = "https://github.com/frankherchet/local-paperless-ngx-mcp"
 Issues = "https://github.com/frankherchet/local-paperless-ngx-mcp/issues"
+Changelog = "https://github.com/frankherchet/local-paperless-ngx-mcp/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/paperless_ngx_mcp"]
