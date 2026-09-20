@@ -6,6 +6,23 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- Added a GitHub-distributed Codex plugin marketplace with an inbox-sorting skill that reuses
+  existing metadata, applies only confident document changes, and leaves uncertain documents for
+  review.
+
+### Changed
+
+- Changed the recommended MCP client configuration to launch a pinned release through `uv` with
+  a managed Python runtime, avoiding fragile repository-local virtual-environment paths.
+- Changed the bundled Codex plugin to use the same resilient, release-pinned MCP launch.
+
+### Security
+
+- Limited the inbox skill to document metadata updates; it never authorizes trash, deletion,
+  organization changes, workflow changes, or OCR reprocessing.
+
 ## [0.9.0] - 2026-08-25
 
 ### Added

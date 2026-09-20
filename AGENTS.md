@@ -10,5 +10,8 @@
   with the changelog; avoid vague entries such as "miscellaneous fixes."
 - For a release, move the relevant `Unreleased` entries into a versioned section with the release
   date and leave an empty `Unreleased` section for subsequent work.
+- When changing the MCP release version, update the pinned wheel URL in `README.md` and
+  `plugins/paperless-ngx/.mcp.json`. Bump the plugin version when its manifest, MCP launch, or
+  bundled skills change.
 - Never include credentials, private Paperless URLs, document contents, or other sensitive data in
   commits, pull requests, release notes, or the changelog.
