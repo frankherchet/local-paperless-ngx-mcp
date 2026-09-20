@@ -127,6 +127,21 @@ Do not point an MCP client at a repository-local `.venv`: its launcher embeds
 the interpreter path used when the environment was created. Update the pinned
 wheel URL when upgrading Paperless-MCP.
 
+### Install the Codex plugin
+
+The repository is also a Codex plugin marketplace. After completing the MCP
+setup above, install the plugin directly from GitHub:
+
+```bash
+codex plugin marketplace add frankherchet/local-paperless-ngx-mcp --ref main
+codex plugin add paperless-ngx@local-paperless-ngx-mcp
+```
+
+The plugin bundles the resilient MCP launch and a `paperless-inbox` skill that
+teaches agents how to handle requests such as "Sort my Paperless inbox" without
+authorizing document deletion or unrelated archive cleanup. Update the
+marketplace and reinstall the plugin to pick up later plugin versions.
+
 The server never reads `.env` files automatically. For CI, containers, or
 headless environments, pass `PAPERLESS_URL` and `PAPERLESS_TOKEN` explicitly
 as process environment variables. They must always be supplied together and

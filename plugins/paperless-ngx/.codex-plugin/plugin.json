@@ -1,0 +1,28 @@
+{
+  "name": "paperless-ngx",
+  "version": "0.2.0",
+  "description": "Search, manage, and sort a local Paperless-ngx archive in Codex.",
+  "author": {
+    "name": "Frank Herchet"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Paperless-ngx",
+    "shortDescription": "Search and sort your Paperless-ngx archive.",
+    "longDescription": "Search, inspect, and, when enabled, organize documents and update metadata in your local Paperless-ngx archive.",
+    "developerName": "Frank Herchet",
+    "category": "Productivity",
+    "capabilities": [
+      "Document search",
+      "Inbox sorting",
+      "Metadata",
+      "Local MCP server"
+    ],
+    "defaultPrompt": [
+      "Sort my Paperless inbox.",
+      "Show my newest Paperless-ngx documents.",
+      "Check my Paperless-ngx server status."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}
