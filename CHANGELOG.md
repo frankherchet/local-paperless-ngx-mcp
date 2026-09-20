@@ -6,6 +6,11 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the recommended MCP client configuration to launch a pinned release through `uv` with
+  a managed Python runtime, avoiding fragile repository-local virtual-environment paths.
+
 ## [0.9.0] - 2026-08-25
 
 ### Added

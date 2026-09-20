@@ -98,19 +98,34 @@ uv run fastmcp run fastmcp.json
 
 ## Configure an MCP client
 
-For a local MCP client such as the Codex app, configure the executable installed
-by `uv`. `uv tool dir --bin` prints the parent directory.
+For a local MCP client such as the Codex app, launch the pinned release through
+the `uv` executable. `uv` then owns the Python runtime and recreates the isolated
+tool environment if the previous interpreter disappears. Use `which uv` on
+macOS/Linux or `where uv` on Windows to find the absolute executable path.
 
 ```json
 {
   "mcpServers": {
     "paperless-ngx": {
-      "command": "<UV-TOOL-BIN>/paperless-ngx-mcp",
-      "args": []
+      "command": "<UV-BIN>/uv",
+      "args": [
+        "tool",
+        "run",
+        "--python",
+        "3.13",
+        "--managed-python",
+        "--from",
+        "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.9.0/local_paperless_ngx_mcp-0.9.0-py3-none-any.whl",
+        "paperless-ngx-mcp"
+      ]
     }
   }
 }
 ```
+
+Do not point an MCP client at a repository-local `.venv`: its launcher embeds
+the interpreter path used when the environment was created. Update the pinned
+wheel URL when upgrading Paperless-MCP.
 
 The server never reads `.env` files automatically. For CI, containers, or
 headless environments, pass `PAPERLESS_URL` and `PAPERLESS_TOKEN` explicitly
