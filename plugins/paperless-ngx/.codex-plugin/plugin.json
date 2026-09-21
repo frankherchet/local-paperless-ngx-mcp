@@ -1,6 +1,6 @@
 {
   "name": "paperless-ngx",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Search, manage, and sort a local Paperless-ngx archive in Codex.",
   "author": {
     "name": "Frank Herchet"

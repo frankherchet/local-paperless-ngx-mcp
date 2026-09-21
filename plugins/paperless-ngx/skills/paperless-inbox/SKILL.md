@@ -6,17 +6,25 @@ description: Sort and triage documents in the Paperless-ngx intake path when the
 # Paperless Inbox
 
 Use the Paperless-ngx MCP tools only. Treat "Inbox bitte sortieren" and equivalent requests as
-authorization to update metadata on documents currently in the intake path. It does not authorize
-trashing documents, deleting anything, changing organization objects, or reprocessing OCR.
+authorization to update metadata on documents currently in the configured intake path. It does not
+authorize trashing documents, deleting anything, changing organization objects, or reprocessing
+OCR.
 
 ## Locate the inbox
 
 1. Check `paperless_status`.
-2. Find the exact storage path named `00 Eingang/Zu prüfen` with `list_metadata`. Resolve it by
-   name rather than assuming an ID. Stop if it is missing or ambiguous.
-3. Read every document assigned to that path with `find_documents_by_metadata`, following all
-   pages. An empty inbox is a successful outcome.
-4. Load the compact correspondent, document-type, storage-path, and tag catalogs once. Reuse
+2. Call `list_workflows` and find the single enabled workflow named
+   `Standard-Eingang – neue Dokumente`. Read it with `get_workflow`. Accept its
+   `assign_storage_path` only when the workflow has an unfiltered `Document Added` trigger and an
+   assignment action. Resolve that ID with `list_metadata` instead of assuming a fixed path name or
+   ID.
+3. If that workflow is missing, duplicated, disabled, filtered, or does not assign a storage path,
+   list the storage paths and ask the user which one is the inbox. Show only plausible choices and
+   wait for the selection; do not guess, create a path, or change a workflow. Reuse the selection
+   for the current request.
+4. Read every document assigned to the resolved path with `find_documents_by_metadata`, following
+   all pages. An empty inbox is a successful outcome.
+5. Load the compact correspondent, document-type, storage-path, and tag catalogs once. Reuse
    existing metadata; do not create near-duplicates.
 
 ## Classify
