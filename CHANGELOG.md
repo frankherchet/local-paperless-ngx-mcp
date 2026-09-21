@@ -14,6 +14,9 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- Changed the Codex inbox skill to derive the intake storage path from the configured standard
+  intake workflow instead of requiring the instance-specific `00 Eingang/Zu prüfen` name. When
+  the workflow is absent or ambiguous, the skill now asks the user to select a plausible path.
 - Changed the recommended MCP client configuration to launch a pinned release through `uv` with
   a managed Python runtime, avoiding fragile repository-local virtual-environment paths.
 - Changed the bundled Codex plugin to use the same resilient, release-pinned MCP launch.

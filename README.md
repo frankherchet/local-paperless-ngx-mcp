@@ -139,7 +139,9 @@ codex plugin add paperless-ngx@local-paperless-ngx-mcp
 
 The plugin bundles the resilient MCP launch and a `paperless-inbox` skill that
 teaches agents how to handle requests such as "Sort my Paperless inbox" without
-authorizing document deletion or unrelated archive cleanup. Update the
+authorizing document deletion or unrelated archive cleanup. It derives the inbox
+from the `Standard-Eingang – neue Dokumente` workflow and asks the user to choose
+a storage path when that workflow is not configured unambiguously. Update the
 marketplace and reinstall the plugin to pick up later plugin versions.
 
 The server never reads `.env` files automatically. For CI, containers, or
