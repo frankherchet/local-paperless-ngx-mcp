@@ -238,7 +238,7 @@ Set `PAPERLESS_TRANSFER_DIR` in the MCP process environment (or import it
 with `setup --from-env`). Use the absolute, canonical path of an existing
 private folder dedicated to transfers. On macOS and Linux, use mode `0700`
 and trusted parent directories. On Windows, use a private ACL on a local
-drive; the server checks the ACL with Windows PowerShell. Do not use a shared,
+drive. The server verifies it before each transfer. Do not use a shared,
 synced, or symlinked directory, or use a folder containing unrelated files.
 
 `preview_document` and `download_document` save a new file and return its

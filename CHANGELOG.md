@@ -29,6 +29,8 @@ Version 0.11.0 was tagged but not published because the Windows CI gate failed.
 ### Fixed
 
 - Fixed Windows release checks by accessing the POSIX user ID only on non-Windows platforms.
+- Replaced the Windows PowerShell permission check with a native Windows ACL check
+  to avoid startup timeouts while keeping file transfers restricted to private paths.
 
 ### Security
 

@@ -5,11 +5,11 @@ from __future__ import annotations
 import os
 import re
 import stat
-import subprocess
 import sys
 from collections.abc import AsyncIterable, Iterator
 from contextlib import contextmanager
 from email.message import Message
+from importlib import import_module
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import BinaryIO
@@ -18,46 +18,6 @@ from paperless_ngx_mcp.mutation_policy import PaperlessError
 
 _WINDOWS_DEVICE = re.compile(r"(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])", re.IGNORECASE)
 _SAFE_SUFFIX = re.compile(r"\.[a-zA-Z0-9]{1,12}\Z")
-
-_WINDOWS_ACL_CHECK = r"""
-$ErrorActionPreference = 'Stop'
-$current = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$trusted = @($current, 'S-1-5-18', 'S-1-5-32-544')
-$replace = [int][Security.AccessControl.FileSystemRights]::Delete `
-    -bor [int][Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles `
-    -bor [int][Security.AccessControl.FileSystemRights]::ChangePermissions `
-    -bor [int][Security.AccessControl.FileSystemRights]::TakeOwnership `
-    -bor [int][Security.AccessControl.FileSystemRights]::WriteAttributes -bor 0x50000000
-$directories = @()
-for ($dir = [IO.DirectoryInfo]::new($env:PAPERLESS_ACL_PATH); $dir; $dir = $dir.Parent) {
-    $directories += $dir
-}
-for ($i = $directories.Count - 1; $i -ge 0; $i--) {
-    $dir = $directories[$i]
-    $leaf = $i -eq 0
-    if ($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) { exit 1 }
-    $acl = Get-Acl -LiteralPath $dir.FullName
-    $raw = [Security.AccessControl.RawSecurityDescriptor]::new(
-        $acl.GetSecurityDescriptorBinaryForm(), 0
-    )
-    if ($null -eq $raw.DiscretionaryAcl -or -not $acl.AreAccessRulesCanonical) { exit 1 }
-    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) { exit 1 }
-    foreach ($ace in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-        if ($ace.AccessControlType -ne 'Allow' -or $ace.IdentityReference.Value -in $trusted) {
-            continue
-        }
-        $inheritOnly = ($ace.PropagationFlags -band
-            [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0
-        if ($leaf -and $inheritOnly -and $ace.IdentityReference.Value -eq 'S-1-3-0') {
-            continue  # Creator Owner on new files resolves to the trusted caller.
-        }
-        if ($leaf -or (-not $inheritOnly -and ([int]$ace.FileSystemRights -band $replace))) {
-            exit 1
-        }
-    }
-}
-exit 0
-"""
 
 
 def transfer_directory(configured: Path | None) -> Path:
@@ -97,21 +57,54 @@ def _check_posix_directory(directory: Path, owner: int) -> None:
 def _check_windows_acl(directory: Path) -> None:
     if directory.anchor.startswith("\\\\"):
         raise PaperlessError("PAPERLESS_TRANSFER_DIR must be on a local Windows drive")
-    system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
-    powershell = Path(system_root) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    security = import_module("win32security")
+    api = import_module("win32api")
+    rights = import_module("ntsecuritycon")
+    win_error = import_module("pywintypes").error
+    replace = (
+        rights.DELETE
+        | rights.FILE_DELETE_CHILD
+        | rights.WRITE_DAC
+        | rights.WRITE_OWNER
+        | rights.FILE_WRITE_ATTRIBUTES
+        | rights.GENERIC_WRITE
+        | rights.GENERIC_ALL
+    )
+    unsafe = "PAPERLESS_TRANSFER_DIR requires a private, trusted Windows ACL"
     try:
-        checked = subprocess.run(
-            [powershell, "-NoProfile", "-NonInteractive", "-Command", _WINDOWS_ACL_CHECK],
-            env={"SystemRoot": system_root, "PAPERLESS_ACL_PATH": str(directory)},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        token = security.OpenProcessToken(api.GetCurrentProcess(), rights.TOKEN_QUERY)
+        try:
+            user = security.GetTokenInformation(token, security.TokenUser)[0]
+        finally:
+            token.Close()
+        trusted = {security.ConvertSidToStringSid(user), "S-1-5-18", "S-1-5-32-544"}
+        for path in (*reversed(directory.parents), directory):
+            _directory_attributes(path)
+            leaf = path == directory
+            descriptor = security.GetNamedSecurityInfo(
+                str(path),
+                security.SE_FILE_OBJECT,
+                security.OWNER_SECURITY_INFORMATION | security.DACL_SECURITY_INFORMATION,
+            )
+            owner = descriptor.GetSecurityDescriptorOwner()
+            acl = descriptor.GetSecurityDescriptorDacl()
+            if acl is None or owner is None or security.ConvertSidToStringSid(owner) not in trusted:
+                raise PaperlessError(unsafe)
+            for index in range(acl.GetAceCount()):
+                ace = acl.GetAce(index)
+                ace_type, flags = ace[0]
+                if ace_type == rights.ACCESS_DENIED_ACE_TYPE:
+                    continue
+                if ace_type != rights.ACCESS_ALLOWED_ACE_TYPE:
+                    raise PaperlessError(unsafe)
+                sid = security.ConvertSidToStringSid(ace[2])
+                inherit_only = bool(flags & rights.INHERIT_ONLY_ACE)
+                if sid in trusted or (inherit_only and sid == "S-1-3-0"):
+                    continue
+                if leaf or (not inherit_only and ace[1] & replace):
+                    raise PaperlessError(unsafe)
+    except win_error as exc:
         raise PaperlessError("Could not verify the Windows transfer directory ACL") from exc
-    if checked.returncode:
-        raise PaperlessError("PAPERLESS_TRANSFER_DIR requires a private, trusted Windows ACL")
 
 
 @contextmanager

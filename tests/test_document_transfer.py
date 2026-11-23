@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from importlib import import_module
 from pathlib import Path
 
 import httpx
@@ -207,3 +208,40 @@ async def test_download_rejects_directory_with_untrusted_parent(transfer_dir: Pa
 
     assert result.is_error
     assert "untrusted parent" in str(result.content)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows ACLs")
+async def test_download_rejects_windows_folder_readable_by_everyone(transfer_dir: Path) -> None:
+    def allow_everyone_to_read() -> None:
+        security = import_module("win32security")
+        rights = import_module("ntsecuritycon")
+        path = str(transfer_dir)
+        descriptor = security.GetNamedSecurityInfo(
+            path, security.SE_FILE_OBJECT, security.DACL_SECURITY_INFORMATION
+        )
+        acl = descriptor.GetSecurityDescriptorDacl()
+        acl.AddAccessAllowedAce(
+            security.ACL_REVISION,
+            rights.FILE_GENERIC_READ,
+            security.ConvertStringSidToSid("S-1-1-0"),
+        )
+        security.SetNamedSecurityInfo(
+            path, security.SE_FILE_OBJECT, security.DACL_SECURITY_INFORMATION, None, None, acl, None
+        )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        pytest.fail("Rejected download must not contact Paperless")
+
+    await asyncio.to_thread(allow_everyone_to_read)
+    async with (
+        PaperlessClient(
+            settings_for(transfer_dir), transport=httpx.MockTransport(handler)
+        ) as paperless,
+        Client(create_server(paperless)) as client,
+    ):
+        result = await client.call_tool(
+            "download_document", {"document_id": 42}, raise_on_error=False
+        )
+
+    assert result.is_error
+    assert "private, trusted Windows ACL" in str(result.content)
