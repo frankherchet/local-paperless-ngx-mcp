@@ -9,7 +9,7 @@
         "3.13",
         "--managed-python",
         "--from",
-        "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.11.0/local_paperless_ngx_mcp-0.11.0-py3-none-any.whl",
+        "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.11.1/local_paperless_ngx_mcp-0.11.1-py3-none-any.whl",
         "paperless-ngx-mcp"
       ]
     }

@@ -6,6 +6,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from collections.abc import AsyncIterable, Iterator
 from contextlib import contextmanager
 from email.message import Message
@@ -64,10 +65,10 @@ def transfer_directory(configured: Path | None) -> Path:
         raise PaperlessError("File transfers require PAPERLESS_TRANSFER_DIR")
     if not configured.is_absolute() or ".." in configured.parts:
         raise PaperlessError("PAPERLESS_TRANSFER_DIR must be an absolute path without '..'")
-    if os.name == "nt":
+    if sys.platform == "win32":
         _check_windows_acl(configured)
     else:
-        _check_posix_directory(configured)
+        _check_posix_directory(configured, os.getuid())
     return configured
 
 
@@ -82,8 +83,7 @@ def _directory_attributes(path: Path) -> os.stat_result:
     return attributes
 
 
-def _check_posix_directory(directory: Path) -> None:
-    owner = os.getuid()
+def _check_posix_directory(directory: Path, owner: int) -> None:
     for ancestor in reversed(directory.parents):
         info = _directory_attributes(ancestor)
         writable_by_others = info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX
