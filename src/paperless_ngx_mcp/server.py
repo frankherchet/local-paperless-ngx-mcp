@@ -5,14 +5,17 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from paperless_ngx_mcp import __version__
 from paperless_ngx_mcp.client import JsonObject, PaperlessClient
 from paperless_ngx_mcp.config import get_settings
+from paperless_ngx_mcp.import_tracking import MAX_WAIT_SECONDS, wait_for_document_import
 from paperless_ngx_mcp.responses import CompactToolResultMiddleware
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True)
@@ -78,6 +81,13 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         ordering: str = "-created",
         similar_to_id: int | None = None,
         custom_field_query: list[Any] | None = None,
+        created_from: date | None = None,
+        created_to: date | None = None,
+        tag_ids: list[int] | None = None,
+        exclude_tag_ids: list[int] | None = None,
+        correspondent_id: int | None = None,
+        document_type_id: int | None = None,
+        storage_path_id: int | None = None,
     ) -> JsonObject:
         """Search documents.
 
@@ -87,6 +97,11 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         custom_field_query accepts a Paperless filter array, e.g.
         ["due", "range", ["today", "in 30 days"]] on Paperless 3.4+, or nested
         ["AND", [filter1, filter2]]. Filters can be used without a text query.
+        Optional read-only filters combine with every mode, custom_field_query, and
+        pagination: created_from/created_to are inclusive YYYY-MM-DD document dates;
+        tag_ids requires every listed tag; exclude_tag_ids excludes documents with
+        any listed tag; correspondent_id, document_type_id, and storage_path_id match
+        exactly. IDs must be positive; created_from may not be after created_to.
         """
         _validate_page(page, page_size)
         if mode in {"title", "advanced"} and not query.strip():
@@ -101,6 +116,13 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
                 ordering=ordering,
                 similar_to_id=similar_to_id,
                 custom_field_query=custom_field_query,
+                created_from=created_from,
+                created_to=created_to,
+                tag_ids=tag_ids,
+                exclude_tag_ids=exclude_tag_ids,
+                correspondent_id=correspondent_id,
+                document_type_id=document_type_id,
+                storage_path_id=storage_path_id,
             )
 
     @server.tool(annotations=READ_ONLY, tags={"paperless", "documents"})
@@ -126,6 +148,69 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
                 include_content=include_content,
                 include_file_metadata=include_file_metadata,
                 max_content_chars=max_content_chars,
+            )
+
+    @server.tool(annotations=CREATE, tags={"paperless", "documents", "files"})
+    async def preview_document(
+        document_id: int,
+        original: bool = False,
+        version_id: int | None = None,
+    ) -> JsonObject:
+        """Save the Paperless preview to a fresh local file and return its path.
+
+        Defaults to the archive file when available. Set original=true to use
+        the original file, or pass version_id to select a specific version.
+        Requires PAPERLESS_TRANSFER_DIR. Does not open the file or change Paperless.
+        """
+        async with use_client() as paperless:
+            return await paperless.save_document(
+                document_id, action="preview", original=original, version_id=version_id
+            )
+
+    @server.tool(annotations=CREATE, tags={"paperless", "documents", "files"})
+    async def download_document(
+        document_id: int,
+        original: bool = False,
+        version_id: int | None = None,
+    ) -> JsonObject:
+        """Download a document to a fresh local file and return its path.
+
+        Defaults to the archive file when available. Set original=true to use
+        the original file, or pass version_id to select a specific version.
+        Requires PAPERLESS_TRANSFER_DIR. Does not change Paperless.
+        """
+        async with use_client() as paperless:
+            return await paperless.save_document(
+                document_id, action="download", original=original, version_id=version_id
+            )
+
+    @server.tool(annotations=CREATE, tags={"paperless", "documents", "files"})
+    async def import_document(
+        filename: str,
+        wait_seconds: Annotated[int, Field(ge=0, le=MAX_WAIT_SECONDS)] = 10,
+    ) -> JsonObject:
+        """Import one explicitly selected filename from PAPERLESS_TRANSFER_DIR.
+
+        Requires Paperless write access. Does not delete the local file. Waits
+        for the Paperless intake job and returns its task_id and the new
+        document_id only when confirmed. Zero means one status check. If still
+        pending or not found, use get_document_import_status; do not re-upload.
+        """
+        async with use_client() as paperless:
+            task_id = await paperless.submit_document_import(filename)
+            return await wait_for_document_import(
+                task_id, paperless.get_task, wait_seconds=wait_seconds
+            )
+
+    @server.tool(annotations=READ_ONLY, tags={"paperless", "documents", "tasks"})
+    async def get_document_import_status(
+        task_id: UUID,
+        wait_seconds: Annotated[int, Field(ge=0, le=MAX_WAIT_SECONDS)] = 0,
+    ) -> JsonObject:
+        """Check a submitted document import without uploading it again."""
+        async with use_client() as paperless:
+            return await wait_for_document_import(
+                str(task_id), paperless.get_task, wait_seconds=wait_seconds
             )
 
     @server.tool(annotations=READ_ONLY, tags={"paperless", "documents", "history"})

@@ -22,6 +22,7 @@ OPTIONAL_ENV_NAMES = (
     "PAPERLESS_API_VERSION",
     "PAPERLESS_REQUEST_TIMEOUT_MS",
     "PAPERLESS_READ_ONLY",
+    "PAPERLESS_TRANSFER_DIR",
 )
 ALL_ENV_NAMES = CREDENTIAL_ENV_NAMES + OPTIONAL_ENV_NAMES
 
@@ -49,6 +50,7 @@ class Settings(BaseModel):
         alias="PAPERLESS_REQUEST_TIMEOUT_MS",
     )
     paperless_read_only: bool = Field(default=True, alias="PAPERLESS_READ_ONLY")
+    paperless_transfer_dir: Path | None = Field(default=None, alias="PAPERLESS_TRANSFER_DIR")
 
     @property
     def base_url(self) -> str:
@@ -61,13 +63,16 @@ class Settings(BaseModel):
 
     def as_config_values(self) -> dict[str, Any]:
         """Return serializable values for the local configuration file."""
-        return {
+        values = {
             "PAPERLESS_URL": str(self.paperless_url),
             "PAPERLESS_TOKEN": self.paperless_token.get_secret_value(),
             "PAPERLESS_API_VERSION": self.paperless_api_version,
             "PAPERLESS_REQUEST_TIMEOUT_MS": self.paperless_request_timeout_ms,
             "PAPERLESS_READ_ONLY": self.paperless_read_only,
         }
+        if self.paperless_transfer_dir is not None:
+            values["PAPERLESS_TRANSFER_DIR"] = str(self.paperless_transfer_dir)
+        return values
 
 
 def config_path() -> Path:

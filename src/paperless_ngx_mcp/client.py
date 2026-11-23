@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Mapping, Sequence
+from datetime import date
+from typing import Any, Literal
+from uuid import UUID
 
 import httpx
 
@@ -17,6 +19,7 @@ from paperless_ngx_mcp.default_intake import (
     plan_default_intake,
     verify_default_intake,
 )
+from paperless_ngx_mcp.document_files import open_upload, save_document_file, transfer_directory
 from paperless_ngx_mcp.metadata_cleanup import preview_metadata_deletion
 from paperless_ngx_mcp.mutation_policy import (
     DELETABLE_ORGANIZATION_OBJECT_TYPES,
@@ -38,6 +41,7 @@ from paperless_ngx_mcp.organization import (
     enrich_organization_item,
     summarize_organization,
 )
+from paperless_ngx_mcp.search_filters import document_filter_params
 
 JsonObject = dict[str, Any]
 QueryValue = str | int | bool
@@ -160,6 +164,83 @@ class PaperlessClient:
             return {"result": payload}
         return payload
 
+    async def save_document(
+        self,
+        document_id: int,
+        *,
+        action: Literal["preview", "download"],
+        original: bool,
+        version_id: int | None,
+    ) -> JsonObject:
+        """Stream a file from Paperless to a new local file, returning its path and metadata."""
+        if document_id < 1 or (version_id is not None and version_id < 1):
+            raise ValueError("document_id and version_id must be positive")
+        if action not in {"preview", "download"}:
+            raise ValueError("Unsupported document file action")
+        directory = await asyncio.to_thread(
+            transfer_directory, self.settings.paperless_transfer_dir
+        )
+        params: dict[str, QueryValue] = {}
+        if original:
+            params["original"] = "true"
+        if version_id is not None:
+            params["version"] = version_id
+        async with self._client.stream(
+            "GET", f"api/documents/{document_id}/{action}/", params=params
+        ) as response:
+            if response.status_code != 200:
+                raise PaperlessApiError(
+                    response.status_code, "Could not retrieve the document file"
+                )
+            disposition = response.headers.get("Content-Disposition")
+            if not disposition:
+                raise PaperlessApiError(200, "Paperless did not return a document file")
+            media_type = response.headers.get("Content-Type", "application/octet-stream")
+            media_type = media_type.split(";", 1)[0].strip().lower()
+            path, size = await save_document_file(
+                directory,
+                f"paperless-{document_id}-{action}-",
+                response.aiter_bytes(chunk_size=64 * 1024),
+                content_disposition=disposition,
+                content_type=media_type,
+            )
+        return {
+            "document_id": document_id,
+            "version_id": version_id,
+            "path": str(path),
+            "mime_type": media_type,
+            "size_bytes": size,
+        }
+
+    async def submit_document_import(self, filename: str) -> str:
+        """Upload an explicitly selected local file and return the consume task UUID."""
+        ensure_write_enabled(self.settings.paperless_read_only)
+        directory = await asyncio.to_thread(
+            transfer_directory, self.settings.paperless_transfer_dir
+        )
+        with open_upload(directory, filename) as handle:
+            try:
+                response = await self._client.post(
+                    "api/documents/post_document/",
+                    files={"document": (filename, handle)},
+                )
+            except httpx.RequestError as exc:
+                raise PaperlessError(
+                    "Import submission was not confirmed. Check Paperless before retrying."
+                ) from exc
+        if response.is_error:
+            raise PaperlessApiError(response.status_code, self._error_message(response))
+        try:
+            task_id = response.json()
+            if isinstance(task_id, str):
+                return str(UUID(task_id))
+        except ValueError:
+            pass
+        raise PaperlessApiError(
+            response.status_code,
+            "No valid import task ID was returned. Check Paperless before retrying.",
+        )
+
     async def check_connection(self) -> JsonObject:
         response = await self._client.get("api/documents/", params={"page_size": 1})
         if response.is_error:
@@ -205,6 +286,13 @@ class PaperlessClient:
         ordering: str,
         similar_to_id: int | None,
         custom_field_query: list[Any] | None = None,
+        created_from: date | None = None,
+        created_to: date | None = None,
+        tag_ids: Sequence[int] | None = None,
+        exclude_tag_ids: Sequence[int] | None = None,
+        correspondent_id: int | None = None,
+        document_type_id: int | None = None,
+        storage_path_id: int | None = None,
     ) -> JsonObject:
         params: dict[str, QueryValue] = {
             "page": page,
@@ -212,6 +300,17 @@ class PaperlessClient:
             "ordering": ordering,
             "truncate_content": True,
         }
+        params.update(
+            document_filter_params(
+                created_from=created_from,
+                created_to=created_to,
+                tag_ids=tag_ids,
+                exclude_tag_ids=exclude_tag_ids,
+                correspondent_id=correspondent_id,
+                document_type_id=document_type_id,
+                storage_path_id=storage_path_id,
+            )
+        )
         if custom_field_query is not None:
             params["custom_field_query"] = json.dumps(custom_field_query, separators=(",", ":"))
         if mode == "similar":
@@ -1013,7 +1112,15 @@ class PaperlessClient:
         if isinstance(result_data, dict):
             important = {
                 key: result_data[key]
-                for key in ("error", "message", "document_id")
+                for key in (
+                    "error",
+                    "error_message",
+                    "message",
+                    "reason",
+                    "document_id",
+                    "duplicate_of",
+                    "duplicate_in_trash",
+                )
                 if key in result_data
             }
             if important:

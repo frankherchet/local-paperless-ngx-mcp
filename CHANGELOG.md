@@ -6,6 +6,24 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- Added combinable created-date, required/excluded tag, correspondent, document type, and
+  storage-path filters to `search_documents`. They work with the existing search modes and
+  custom-field filters.
+- Added `preview_document` and `download_document` for archive or original files, including
+  optional version selection. Both save a new local file and return its path, type, and size
+  without embedding document content in MCP responses.
+- Added `import_document` and `get_document_import_status`. Import uploads one selected local
+  file without removing it and reports a new document ID only when the Paperless intake task
+  confirms it. Pending jobs can be checked without uploading again.
+
+### Security
+
+- Local file transfers are disabled unless `PAPERLESS_TRANSFER_DIR` points to a trusted,
+  private directory. Uploads reject path traversal and links and respect Paperless read-only
+  mode. Preview and download do not change Paperless but create local files.
+
 ## [0.10.0] - 2026-11-23
 
 ### Added

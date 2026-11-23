@@ -9,8 +9,11 @@ MCP-capable clients to your own Paperless-ngx instance over `stdio`.
 - Check connectivity, Paperless version, and API version.
 - Search documents by simple query, title, Paperless advanced syntax, or
   similarity.
-- Filter documents by custom field values, with or without a text query.
+- Combine text or similarity search with dates, tags, correspondents, document
+  types, storage paths, and custom field values.
 - Retrieve document metadata, OCR text, and optional file checksums.
+- Save document previews and downloads locally, or upload one selected file and
+  check its import result.
 - List tags, correspondents, document types, storage paths, custom fields,
   mail rules, saved views, and workflows with compact pagination.
 - Compare Paperless classifier and AI suggestions without applying them.
@@ -156,16 +159,19 @@ The server never reads `.env` files automatically. For CI, containers, or
 headless environments, pass `PAPERLESS_URL` and `PAPERLESS_TOKEN` explicitly
 as process environment variables. They must always be supplied together and
 override the local configuration file. `PAPERLESS_API_VERSION`,
-`PAPERLESS_REQUEST_TIMEOUT_MS`, and `PAPERLESS_READ_ONLY` can also be overridden
-explicitly.
+`PAPERLESS_REQUEST_TIMEOUT_MS`, `PAPERLESS_READ_ONLY`, and
+`PAPERLESS_TRANSFER_DIR` can also be overridden explicitly.
 
 ## Available tools
 
 | Tool | Purpose | Writes to Paperless |
 | --- | --- | --- |
 | `paperless_status` | Check connectivity, versions, and document count | No |
-| `search_documents` | Find documents in four modes, optionally filtered by custom field values | No |
+| `search_documents` | Combine text or similarity search with metadata and custom field filters | No |
 | `get_document` | Retrieve document metadata, OCR text, and optional file checksums | No |
+| `preview_document` / `download_document` | Save a preview or download to the local transfer folder | No (creates a local file) |
+| `import_document` | Upload one selected file, returning the task ID and confirmed document ID when available | Yes |
+| `get_document_import_status` | Check an existing import task without re-uploading | No |
 | `get_document_history` | Retrieve compact, paginated audit history; full changes are opt-in | No |
 | `get_document_suggestions` | Read classifier and optional AI suggestions | No |
 | `get_task` | Retrieve one Paperless background task by ID | No |
@@ -216,6 +222,41 @@ Even when writes are enabled, the MCP cannot permanently delete documents:
 
 Workflow objects can be deleted only through `delete_workflow`, which defaults
 to `dry_run=true`. This never affects existing documents or trash.
+
+### Combined document search
+
+Pass `created_from` and `created_to` as inclusive `YYYY-MM-DD` dates. `tag_ids`
+requires all listed tags; `exclude_tag_ids` excludes documents with any of the
+listed tags. Add `correspondent_id`, `document_type_id`, `storage_path_id`,
+or `custom_field_query` as needed. These filters combine with each other, with
+all search modes, and with pagination. Leave the text query empty for a
+filter-only search.
+
+### Local file transfers
+
+Set `PAPERLESS_TRANSFER_DIR` in the MCP process environment (or import it
+with `setup --from-env`). Use the absolute, canonical path of an existing
+private folder dedicated to transfers. On macOS and Linux, use mode `0700`
+and trusted parent directories. On Windows, use a private ACL on a local
+drive; the server checks the ACL with Windows PowerShell. Do not use a shared,
+synced, or symlinked directory, or use a folder containing unrelated files.
+
+`preview_document` and `download_document` save a new file and return its
+path, MIME type, and size; they do not open it or place its bytes in the chat.
+Paperless uses the archive copy when available unless `original=true`.
+Pass `version_id` to select a particular file version on servers that
+support document versions. These tools work in read-only mode because they
+do not change Paperless, but they still write a local file. Delete saved copies
+locally when no longer needed.
+
+To import, put only the file you want to send into the folder and pass its exact
+`filename` to `import_document`. The tool requires write access and never
+removes the local file. Paperless applies its normal intake workflow. Only
+`state: imported` confirms a new `document_id`. If the response is pending or
+not found, keep the `task_id` and call `get_document_import_status` instead of
+uploading again. Duplicates and jobs that finish without reporting a new
+document are not reported as imports. `wait_seconds` is `0` (one status check)
+to `60` seconds; import defaults to 10 seconds, status checks default to zero.
 
 ### Custom fields
 
