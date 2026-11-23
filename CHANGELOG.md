@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-23
+
 ### Added
 
 - Added combinable created-date, required/excluded tag, correspondent, document type, and
@@ -17,6 +19,10 @@ All notable changes to this project are documented in this file. The format is b
 - Added `import_document` and `get_document_import_status`. Import uploads one selected local
   file without removing it and reports a new document ID only when the Paperless intake task
   confirms it. Pending jobs can be checked without uploading again.
+
+### Changed
+
+- Bumped the Codex plugin to 0.2.4 and pinned it to the MCP 0.11.0 wheel.
 
 ### Security
 
@@ -144,7 +150,8 @@ All notable changes to this project are documented in this file. The format is b
   validation, environment import, masked display, and reset support.
 - Added configuration-file permission checks and non-interactive startup behavior for MCP clients.
 
-[Unreleased]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.8.5...v0.9.0
 [0.8.5]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.8.4...v0.8.5

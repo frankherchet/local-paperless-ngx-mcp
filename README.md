@@ -40,7 +40,7 @@ Install the desired release wheel as a local `uv` tool. Replace the version in
 the URL when installing a newer release:
 
 ```bash
-uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.10.0/local_paperless_ngx_mcp-0.10.0-py3-none-any.whl"
+uv tool install "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.11.0/local_paperless_ngx_mcp-0.11.0-py3-none-any.whl"
 paperless-ngx-mcp setup
 ```
 
@@ -123,7 +123,7 @@ macOS/Linux or `where uv` on Windows to find the absolute executable path.
         "3.13",
         "--managed-python",
         "--from",
-        "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.10.0/local_paperless_ngx_mcp-0.10.0-py3-none-any.whl",
+        "https://github.com/frankherchet/local-paperless-ngx-mcp/releases/download/v0.11.0/local_paperless_ngx_mcp-0.11.0-py3-none-any.whl",
         "paperless-ngx-mcp"
       ]
     }
