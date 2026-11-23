@@ -755,11 +755,15 @@ class PaperlessClient:
 
     async def move_documents_to_trash(self, document_ids: list[int]) -> JsonObject:
         """Move documents to Paperless trash; this does not permanently delete them."""
-        return await self._bulk_edit_documents(document_ids, "delete", {})
+        return await self.request("POST", "api/documents/delete/", json={"documents": document_ids})
 
     async def reprocess_documents(self, document_ids: list[int]) -> JsonObject:
         """Queue Paperless reprocessing using its configured OCR mode."""
-        return await self._bulk_edit_documents(document_ids, "reprocess", {})
+        return await self.request(
+            "POST",
+            "api/documents/reprocess/",
+            json={"documents": document_ids},
+        )
 
     async def list_trashed_documents(
         self,

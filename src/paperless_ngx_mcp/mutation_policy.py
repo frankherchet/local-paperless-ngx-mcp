@@ -43,8 +43,6 @@ SAFE_BULK_DOCUMENT_METHODS = frozenset(
         "set_document_type",
         "set_storage_path",
         "modify_tags",
-        "delete",  # Paperless moves documents to its reversible trash.
-        "reprocess",  # Paperless applies its configured OCR processing mode.
     }
 )
 

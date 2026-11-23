@@ -45,10 +45,16 @@ For each inbox document:
 - Apply title or date with `update_document`, assignments with `set_document_metadata_field`, and
   additive tags with `modify_document_tags`.
 - Do not replace the complete tag list and do not remove existing tags during routine inbox sorting.
-- Set the destination `storage_path` last. Moving it out of the inbox means processing is complete.
-- Group documents that receive the same assignment when the tool supports batching.
-- If a write fails, leave that document in the inbox and report the failure. Do not retry a
-  non-idempotent operation blindly.
+- Group documents that receive the same assignment when the tool supports batching. Track which
+  documents belong to each write.
+- If a write returns a `task_id`, check it with `get_task` until its status is `SUCCESS` or a
+  terminal failure. `result: OK` alongside a `task_id` means queued, not applied. If the task is
+  pending, not found, or cannot be checked within the request, report it as unconfirmed, not
+  successful. A successful response with no `task_id` is a synchronous write.
+- Set the destination `storage_path` only after all earlier writes for those documents have
+  succeeded. If an earlier write fails or is unconfirmed, do not submit the move for the affected
+  documents. Apply the same task check to the move before reporting documents as sorted.
+- Report failed or unconfirmed writes separately. Do not blindly retry a queued or failed write.
 
 Never call trash, delete, metadata-creation, metadata-deletion, workflow, or OCR-reprocessing tools
 as part of inbox sorting. If the needed metadata does not exist, propose it and leave the document
@@ -61,4 +67,4 @@ Return a compact summary with:
 - documents sorted and their destination paths;
 - metadata changed per document;
 - documents left for review and the specific uncertainty;
-- failures, without exposing document OCR text unnecessarily.
+- failed or unconfirmed writes, with task IDs when available, without exposing OCR text unnecessarily.

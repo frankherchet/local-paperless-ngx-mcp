@@ -16,8 +16,8 @@ def test_transport_policy_distinguishes_reversible_and_blocked_mutations() -> No
     assert (
         enforce_transport_mutation_policy(
             "POST",
-            "api/documents/bulk_edit/",
-            {"method": "delete"},
+            "api/documents/delete/",
+            {"documents": [42]},
         )
         is True
     )

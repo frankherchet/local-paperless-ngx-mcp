@@ -523,6 +523,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         """Set or clear one metadata field on multiple documents.
 
         Pass null as value_id to clear the selected field. No document is deleted.
+        Check any returned task_id with get_task before relying on the assignment.
         """
         _validate_document_ids(document_ids)
         if value_id is not None and value_id < 1:
@@ -536,7 +537,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         add_tag_ids: list[int] | None = None,
         remove_tag_ids: list[int] | None = None,
     ) -> JsonObject:
-        """Add and remove tags on multiple documents without replacing unrelated tags."""
+        """Add or remove tags without replacing unrelated tags; check any task_id with get_task."""
         _validate_document_ids(document_ids)
         add_ids = add_tag_ids or []
         remove_ids = remove_tag_ids or []
@@ -556,8 +557,8 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
     async def move_documents_to_trash(document_ids: list[int]) -> JsonObject:
         """Move documents to Paperless trash, where they remain restorable.
 
-        This is the strongest document-removal action available. Permanent deletion
-        and emptying the trash are intentionally not implemented.
+        Check any returned task_id with get_task before treating the move as complete.
+        Permanent deletion and emptying the trash are intentionally not implemented.
         """
         _validate_document_ids(document_ids)
         async with use_client() as paperless:
@@ -568,7 +569,8 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         """Queue Paperless document reprocessing with the server's configured OCR mode.
 
         Paperless controls whether this is redo or force through PAPERLESS_OCR_MODE;
-        the MCP does not alter that server-wide setting. The operation is asynchronous.
+        the MCP does not alter that server-wide setting. Check any returned task_id
+        with get_task; additional OCR tasks can continue after the dispatch task ends.
         """
         _validate_document_ids(document_ids)
         async with use_client() as paperless:

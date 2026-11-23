@@ -53,6 +53,9 @@ setup when needed:
 paperless-ngx-mcp setup --api-version 10
 ```
 
+Moving documents to the trash and queuing OCR reprocessing use dedicated
+endpoints available in Paperless-ngx 3.x.
+
 The local JSON configuration file is not encrypted. On macOS and Linux the
 server enforces `0600` file permissions; on Windows it is placed in the user's
 AppData directory. Show its location and a masked configuration with:
@@ -143,6 +146,9 @@ authorizing document deletion or unrelated archive cleanup. It derives the inbox
 from the `Standard-Eingang – neue Dokumente` workflow and asks the user to choose
 a storage path when that workflow is not configured unambiguously. Update the
 marketplace and reinstall the plugin to pick up later plugin versions.
+The inbox skill checks queued metadata writes with `get_task` before moving
+each affected document out of the inbox, and confirms the move before reporting
+it as complete.
 
 The server never reads `.env` files automatically. For CI, containers, or
 headless environments, pass `PAPERLESS_URL` and `PAPERLESS_TOKEN` explicitly
@@ -188,6 +194,11 @@ explicitly.
 `update_document` and other write tools require
 `PAPERLESS_READ_ONLY=false`. The setup wizard enables this by default; use
 `setup --read-only` or a process environment override to force read-only mode.
+
+On Paperless-ngx 3.5+, document bulk writes can return `result: "OK"` and
+`task_id`. This means the job was queued, not completed. Check `get_task` for
+`SUCCESS` before relying on the change. For OCR reprocessing, a successful
+dispatch task can still have separate OCR tasks running.
 
 Even when writes are enabled, the MCP cannot permanently delete documents:
 

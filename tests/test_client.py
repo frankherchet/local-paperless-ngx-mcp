@@ -599,6 +599,28 @@ async def test_organization_overview_survives_unavailable_mail_rules() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "endpoint"),
+    [("move_documents_to_trash", "delete"), ("reprocess_documents", "reprocess")],
+)
+async def test_document_actions_return_queued_task(operation: str, endpoint: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != f"/paperless/api/documents/{endpoint}/":
+            return httpx.Response(400, json={"detail": "Use the dedicated document action"})
+        assert request.method == "POST"
+        assert json.loads(request.content) == {"documents": [42]}
+        return httpx.Response(200, json={"result": "OK", "task_id": "queued-id"})
+
+    async with PaperlessClient(
+        make_settings(read_only=False),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        result = await getattr(client, operation)([42])
+
+    assert result == {"result": "OK", "task_id": "queued-id"}
+
+
+@pytest.mark.asyncio
 async def test_permanent_document_deletion_is_blocked_before_network() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         raise AssertionError("Deletion guard must run before the network request")
@@ -682,8 +704,6 @@ async def test_document_organization_writes_use_allowlisted_bulk_methods() -> No
             add_tag_ids=[2],
             remove_tag_ids=[3],
         )
-        await client.move_documents_to_trash([12])
-        await client.reprocess_documents([13])
 
     assert requests == [
         {
@@ -696,8 +716,6 @@ async def test_document_organization_writes_use_allowlisted_bulk_methods() -> No
             "method": "modify_tags",
             "parameters": {"add_tags": [2], "remove_tags": [3]},
         },
-        {"documents": [12], "method": "delete", "parameters": {}},
-        {"documents": [13], "method": "reprocess", "parameters": {}},
     ]
 
 

@@ -20,6 +20,14 @@ All notable changes to this project are documented in this file. The format is b
 - Changed the recommended MCP client configuration to launch a pinned release through `uv` with
   a managed Python runtime, avoiding fragile repository-local virtual-environment paths.
 - Changed the bundled Codex plugin to use the same resilient, release-pinned MCP launch.
+- Moved trash and OCR reprocessing to dedicated Paperless-ngx 3.x endpoints, replacing deprecated
+  document bulk methods. API v10 remains the default.
+
+### Fixed
+
+- Made the Codex inbox skill confirm queued metadata writes before moving documents out of the
+  intake path and confirm each move before reporting it as complete. Failed or unconfirmed jobs
+  are reported separately.
 
 ### Security
 
