@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-23
+
 ### Added
 
 - Added a GitHub-distributed Codex plugin marketplace with an inbox-sorting skill that reuses
@@ -25,6 +27,7 @@ All notable changes to this project are documented in this file. The format is b
 - Changed the recommended MCP client configuration to launch a pinned release through `uv` with
   a managed Python runtime, avoiding fragile repository-local virtual-environment paths.
 - Changed the bundled Codex plugin to use the same resilient, release-pinned MCP launch.
+- Bumped the Codex plugin to 0.2.3 and pinned it to the MCP 0.10.0 wheel.
 - Moved trash and OCR reprocessing to dedicated Paperless-ngx 3.x endpoints, replacing deprecated
   document bulk methods. API v10 remains the default.
 
@@ -123,7 +126,8 @@ All notable changes to this project are documented in this file. The format is b
   validation, environment import, masked display, and reset support.
 - Added configuration-file permission checks and non-interactive startup behavior for MCP clients.
 
-[Unreleased]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.8.5...v0.9.0
 [0.8.5]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/frankherchet/local-paperless-ngx-mcp/compare/v0.8.3...v0.8.4
