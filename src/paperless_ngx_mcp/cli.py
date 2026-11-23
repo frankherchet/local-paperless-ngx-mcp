@@ -7,13 +7,16 @@ import asyncio
 import getpass
 import json
 import os
+import re
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
+
+import httpx
 
 from paperless_ngx_mcp import __version__
-from paperless_ngx_mcp.client import PaperlessClient
+from paperless_ngx_mcp.client import PaperlessApiError, PaperlessClient
 from paperless_ngx_mcp.config import (
     CREDENTIAL_ENV_NAMES,
     ConfigurationError,
@@ -44,6 +47,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             _run_setup(args)
         elif command == "config":
             _run_config(args)
+        elif command == "doctor":
+            _run_doctor()
         else:
             _run_server()
     except ConfigurationError as error:
@@ -60,6 +65,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("serve", help="Run the MCP server over stdio")
+    subparsers.add_parser("doctor", help="Check Paperless connectivity and authentication")
 
     setup = subparsers.add_parser("setup", help="Configure Paperless access interactively")
     setup.add_argument(
@@ -175,6 +181,61 @@ def _run_config(args: argparse.Namespace) -> None:
         removed = reset_config()
         get_settings.cache_clear()
         print("Configuration removed." if removed else "No local configuration exists.")
+
+
+def _run_doctor() -> None:
+    try:
+        settings = get_settings()
+    except ConfigurationError:
+        # Configuration exceptions can include raw values from a malformed config.
+        print(
+            "paperless-ngx-mcp: Invalid or missing configuration. Run "
+            "'paperless-ngx-mcp setup' or check PAPERLESS_URL and PAPERLESS_TOKEN.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from None
+
+    try:
+        status = _verify_connection(settings)
+    except PaperlessApiError as error:
+        code = error.status_code
+        hint = {
+            200: "Unexpected response. Check the Paperless URL and reverse proxy.",
+            401: "Check the API token.",
+            403: "Check the token and its permission to view documents.",
+            404: "Check the Paperless URL, including any reverse-proxy subpath.",
+            406: f"The server rejected REST API v{settings.paperless_api_version}. "
+            "Check PAPERLESS_API_VERSION or configure a supported version with setup.",
+        }.get(code, "Check the Paperless server and reverse proxy.")
+        _doctor_failure(f"HTTP {code}. {hint}")
+    except httpx.TimeoutException:
+        _doctor_failure("The Paperless request timed out. Check reachability and request timeout.")
+    except (httpx.RequestError, httpx.InvalidURL):
+        _doctor_failure("Could not connect. Check the URL, network, and TLS configuration.")
+
+    paperless = status.get("paperless_version")
+    api = status.get("api_version")
+    count = status.get("document_count")
+    if (
+        not isinstance(paperless, str)
+        or not re.fullmatch(r"[0-9]+[.][0-9]+[a-zA-Z0-9_.+-]{0,60}", paperless)
+        or not isinstance(api, str)
+        or not re.fullmatch(r"[0-9]{1,6}", api)
+        or type(count) is not int
+        or count < 0
+    ):
+        _doctor_failure("Endpoint did not return the expected Paperless API response.")
+
+    print("Paperless connection OK")
+    print(f"Paperless: {paperless}")
+    print(f"REST API: requested v{settings.paperless_api_version}, server maximum v{api}")
+    print(f"Visible documents: {count}")
+    print(f"MCP read-only: {'yes' if settings.paperless_read_only else 'no'}")
+
+
+def _doctor_failure(message: str) -> NoReturn:
+    print(f"paperless-ngx-mcp: {message}", file=sys.stderr)
+    raise SystemExit(1) from None
 
 
 def _verify_connection(settings: Settings) -> dict[str, Any]:

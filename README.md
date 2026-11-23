@@ -79,6 +79,21 @@ To upgrade, install a newer release wheel with `--force`. Before uninstalling,
 run `paperless-ngx-mcp config reset` if you also want to remove local
 credentials.
 
+## Check the connection
+
+```bash
+paperless-ngx-mcp doctor
+```
+
+The command uses the same saved configuration and environment overrides as the
+MCP server. It makes one authenticated, read-only request and prints the
+Paperless version, requested and server-maximum REST API versions, visible
+document count, and MCP read-only mode. It does not start the MCP server,
+change the configuration, or print the token or remote error bodies.
+
+Exit codes: `0` for a verified connection, `1` for a connection or API failure,
+and `2` for missing or invalid local configuration.
+
 ## Run the server
 
 After setup, start a stdio MCP server with:

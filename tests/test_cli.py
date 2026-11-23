@@ -5,11 +5,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 import paperless_ngx_mcp.cli as cli
 import paperless_ngx_mcp.config as config
 from paperless_ngx_mcp import __version__
+from paperless_ngx_mcp.client import PaperlessClient
 from paperless_ngx_mcp.config import ConfigurationError, Settings, load_config_values
 
 
@@ -147,3 +149,85 @@ def test_version_is_printed(capsys: pytest.CaptureFixture[str]) -> None:
     cli.main(["--version"])
 
     assert capsys.readouterr().out.strip() == __version__
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "payload", "expected"),
+    [
+        (
+            200,
+            {"X-Version": "3.5.1", "X-Api-Version": "10"},
+            {"count": 0, "results": []},
+            "Paperless connection OK",
+        ),
+        (401, {}, {"detail": "private-token"}, "HTTP 401"),
+        (406, {}, {"detail": "private-token"}, "REST API v9"),
+        (200, {}, {"count": 0, "results": []}, "Paperless API"),
+        (
+            302,
+            {"X-Version": "3.5.1", "X-Api-Version": "10"},
+            {"count": 0, "results": []},
+            "HTTP 302",
+        ),
+    ],
+)
+def test_doctor_checks_configured_paperless_without_showing_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    status: int,
+    headers: dict[str, str],
+    payload: dict[str, object],
+    expected: str,
+) -> None:
+    target = tmp_path / "config.json"
+    monkeypatch.setattr(config, "config_path", lambda: target)
+    monkeypatch.setenv("PAPERLESS_URL", "http://paperless.test/archive")
+    monkeypatch.setenv("PAPERLESS_TOKEN", "private-token")
+    monkeypatch.setenv("PAPERLESS_API_VERSION", "9")
+    config.get_settings.cache_clear()
+
+    def response(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/archive/api/documents/"
+        assert request.headers["Authorization"] == "Token private-token"
+        assert request.headers["Accept"] == "application/json; version=9"
+        return httpx.Response(status, json=payload, headers=headers)
+
+    monkeypatch.setattr(
+        cli,
+        "PaperlessClient",
+        lambda settings: PaperlessClient(settings, transport=httpx.MockTransport(response)),
+    )
+    try:
+        success = status == 200 and bool(headers)
+        if success:
+            cli.main(["doctor"])
+        else:
+            with pytest.raises(SystemExit) as exc:
+                cli.main(["doctor"])
+            assert exc.value.code == 1
+    finally:
+        config.get_settings.cache_clear()
+
+    captured = capsys.readouterr()
+    assert expected in (captured.out if success else captured.err)
+    assert "private-token" not in captured.out + captured.err
+    assert not target.exists()
+
+
+def test_doctor_rejects_partial_config_without_printing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.json")
+    monkeypatch.delenv("PAPERLESS_URL", raising=False)
+    monkeypatch.setenv("PAPERLESS_TOKEN", "private-token")
+    config.get_settings.cache_clear()
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["doctor"])
+
+    assert exc.value.code == 2
+    error = capsys.readouterr().err
+    assert "paperless-ngx-mcp setup" in error
+    assert "private-token" not in error

@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- Added `paperless-ngx-mcp doctor` to verify the configured authenticated Paperless
+  connection, API version, and visible document count without writing to Paperless or
+  printing credentials. Exit codes distinguish connection and configuration failures.
+
 ## [0.11.1] - 2026-11-23
 
 Version 0.11.0 was tagged but not published because the Windows CI gate failed.

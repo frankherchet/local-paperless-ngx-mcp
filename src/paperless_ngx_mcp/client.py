@@ -243,7 +243,7 @@ class PaperlessClient:
 
     async def check_connection(self) -> JsonObject:
         response = await self._client.get("api/documents/", params={"page_size": 1})
-        if response.is_error:
+        if response.status_code != 200:
             raise PaperlessApiError(response.status_code, self._error_message(response))
 
         try:
