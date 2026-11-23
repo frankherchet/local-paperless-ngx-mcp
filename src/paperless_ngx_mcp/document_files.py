@@ -77,7 +77,12 @@ def _check_windows_acl(directory: Path) -> None:
             user = security.GetTokenInformation(token, security.TokenUser)[0]
         finally:
             token.Close()
-        trusted = {security.ConvertSidToStringSid(user), "S-1-5-18", "S-1-5-32-544"}
+        trusted = {
+            security.ConvertSidToStringSid(user),
+            "S-1-5-18",  # Local System
+            "S-1-5-32-544",  # Built-in Administrators
+            "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",  # TrustedInstaller
+        }
         for path in (*reversed(directory.parents), directory):
             _directory_attributes(path)
             leaf = path == directory
@@ -88,8 +93,11 @@ def _check_windows_acl(directory: Path) -> None:
             )
             owner = descriptor.GetSecurityDescriptorOwner()
             acl = descriptor.GetSecurityDescriptorDacl()
-            if acl is None or owner is None or security.ConvertSidToStringSid(owner) not in trusted:
-                raise PaperlessError(unsafe)
+            if acl is None:
+                raise PaperlessError(f"{unsafe}: a path component has no DACL")
+            if owner is None or security.ConvertSidToStringSid(owner) not in trusted:
+                level = len(directory.parts) - len(path.parts)
+                raise PaperlessError(f"{unsafe}: untrusted directory owner at depth {level}")
             for index in range(acl.GetAceCount()):
                 ace = acl.GetAce(index)
                 ace_type, flags = ace[0]

@@ -18,6 +18,31 @@ from paperless_ngx_mcp.server import create_server
 def transfer_dir(tmp_path: Path) -> Path:
     folder = tmp_path.resolve() / "transfer"
     folder.mkdir(mode=0o700)
+    if os.name == "nt":
+        security = import_module("win32security")
+        api = import_module("win32api")
+        rights = import_module("ntsecuritycon")
+        token = security.OpenProcessToken(api.GetCurrentProcess(), rights.TOKEN_QUERY)
+        try:
+            user = security.GetTokenInformation(token, security.TokenUser)[0]
+        finally:
+            token.Close()
+        acl = security.ACL()
+        acl.AddAccessAllowedAceEx(
+            security.ACL_REVISION,
+            rights.OBJECT_INHERIT_ACE | rights.CONTAINER_INHERIT_ACE,
+            rights.FILE_ALL_ACCESS,
+            user,
+        )
+        security.SetNamedSecurityInfo(
+            str(folder),
+            security.SE_FILE_OBJECT,
+            security.DACL_SECURITY_INFORMATION | security.PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            acl,
+            None,
+        )
     return folder
 
 
