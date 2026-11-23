@@ -11,6 +11,8 @@ All notable changes to this project are documented in this file. The format is b
 - Added `paperless-ngx-mcp doctor` to verify the configured authenticated Paperless
   connection, API version, and visible document count without writing to Paperless or
   printing credentials. Exit codes distinguish connection and configuration failures.
+- Added a shared Claude Code and OMP marketplace catalog and plugin manifest. Both clients
+  install the same MCP launch configuration and inbox skill as Codex. Plugin version: 0.2.6.
 
 ## [0.11.1] - 2026-11-23
 

@@ -1,0 +1,15 @@
+{
+  "name": "local-paperless-ngx-mcp",
+  "owner": {
+    "name": "Frank Herchet"
+  },
+  "plugins": [
+    {
+      "name": "paperless-ngx",
+      "version": "0.2.6",
+      "description": "Search, manage, and sort a local Paperless-ngx archive.",
+      "source": "./plugins/paperless-ngx",
+      "category": "productivity"
+    }
+  ]
+}

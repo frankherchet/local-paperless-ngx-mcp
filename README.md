@@ -150,15 +150,31 @@ Do not point an MCP client at a repository-local `.venv`: its launcher embeds
 the interpreter path used when the environment was created. Update the pinned
 wheel URL when upgrading Paperless-MCP.
 
-### Install the Codex plugin
+### Install the plugin in Codex, Claude Code, or OMP
 
-The repository is also a Codex plugin marketplace. After completing the MCP
-setup above, install the plugin directly from GitHub:
+Complete the MCP setup above, then install the plugin from GitHub. In Codex:
 
 ```bash
 codex plugin marketplace add frankherchet/local-paperless-ngx-mcp --ref main
 codex plugin add paperless-ngx@local-paperless-ngx-mcp
 ```
+
+In Claude Code, run these slash commands:
+
+```text
+/plugin marketplace add frankherchet/local-paperless-ngx-mcp
+/plugin install paperless-ngx@local-paperless-ngx-mcp
+```
+
+In OMP, run:
+
+```bash
+omp plugin marketplace add frankherchet/local-paperless-ngx-mcp
+omp plugin install paperless-ngx@local-paperless-ngx-mcp
+```
+
+Restart the OMP session or run `/reload-plugins` to load the installed skill and
+MCP server.
 
 The plugin bundles the resilient MCP launch and a `paperless-inbox` skill that
 teaches agents how to handle requests such as "Sort my Paperless inbox" without
