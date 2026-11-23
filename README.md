@@ -237,9 +237,10 @@ filter-only search.
 Set `PAPERLESS_TRANSFER_DIR` in the MCP process environment (or import it
 with `setup --from-env`). Use the absolute, canonical path of an existing
 private folder dedicated to transfers. On macOS and Linux, use mode `0700`
-and trusted parent directories. On Windows, use a private ACL on a local
-drive. The server verifies it before each transfer. Do not use a shared,
-synced, or symlinked directory, or use a folder containing unrelated files.
+and trusted parent directories. On Windows, use a private ACL on a local drive,
+for example in a dedicated subfolder of your user profile. The server verifies
+permissions before each transfer. Do not use a shared, synced, or symlinked
+directory, or use a folder containing unrelated files.
 
 `preview_document` and `download_document` save a new file and return its
 path, MIME type, and size; they do not open it or place its bytes in the chat.

@@ -109,8 +109,11 @@ def _check_windows_acl(directory: Path) -> None:
                 inherit_only = bool(flags & rights.INHERIT_ONLY_ACE)
                 if sid in trusted or (inherit_only and sid == "S-1-3-0"):
                     continue
-                if leaf or (not inherit_only and ace[1] & replace):
-                    raise PaperlessError(unsafe)
+                if leaf:
+                    raise PaperlessError(f"{unsafe}: other users have access to the folder")
+                if not inherit_only and ace[1] & replace:
+                    level = len(directory.parts) - len(path.parts)
+                    raise PaperlessError(f"{unsafe}: another user can modify ancestor {level}")
     except win_error as exc:
         raise PaperlessError("Could not verify the Windows transfer directory ACL") from exc
 

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Iterator
 from importlib import import_module
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import httpx
 import pytest
@@ -15,10 +17,15 @@ from paperless_ngx_mcp.server import create_server
 
 
 @pytest.fixture
-def transfer_dir(tmp_path: Path) -> Path:
-    folder = tmp_path.resolve() / "transfer"
-    folder.mkdir(mode=0o700)
-    if os.name == "nt":
+def transfer_dir(tmp_path: Path) -> Iterator[Path]:
+    if os.name != "nt":
+        folder = tmp_path.resolve() / "transfer"
+        folder.mkdir(mode=0o700)
+        yield folder
+        return
+
+    with TemporaryDirectory(dir=Path.home().resolve(), prefix="paperless-test-") as location:
+        folder = Path(location)
         security = import_module("win32security")
         api = import_module("win32api")
         rights = import_module("ntsecuritycon")
@@ -43,7 +50,7 @@ def transfer_dir(tmp_path: Path) -> Path:
             acl,
             None,
         )
-    return folder
+        yield folder
 
 
 def settings_for(transfer_dir: Path | None, *, read_only: bool = False) -> Settings:
