@@ -25,6 +25,12 @@ def test_transport_policy_distinguishes_reversible_and_blocked_mutations() -> No
         enforce_transport_mutation_policy("DELETE", "api/documents/42/", None)
 
 
+@pytest.mark.parametrize("action", ["delete", "reprocess"])
+def test_document_actions_require_explicit_document_ids(action: str) -> None:
+    with pytest.raises(PermanentDeletionDisabled, match="explicit document IDs"):
+        enforce_transport_mutation_policy("POST", f"api/documents/{action}/", {"all": True})
+
+
 def test_workflow_delete_requires_the_internal_approved_path() -> None:
     with pytest.raises(PermanentDeletionDisabled, match="must use delete_workflow"):
         enforce_transport_mutation_policy("DELETE", "api/workflows/4/", None)

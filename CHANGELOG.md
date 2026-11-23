@@ -11,6 +11,11 @@ All notable changes to this project are documented in this file. The format is b
 - Added a GitHub-distributed Codex plugin marketplace with an inbox-sorting skill that reuses
   existing metadata, applies only confident document changes, and leaves uncertain documents for
   review.
+- Added `custom_field_query` to document search, including relative date filters on Paperless-ngx
+  3.4 and later, and `modify_document_custom_fields` to set or remove selected field assignments
+  on multiple documents. Edits respect read-only mode. Paperless-ngx 3.5.1 can retain old
+  reciprocal links when replacing or clearing document-link values; remove the field before
+  reassigning links.
 
 ### Changed
 
@@ -33,6 +38,8 @@ All notable changes to this project are documented in this file. The format is b
 
 - Limited the inbox skill to document metadata updates; it never authorizes trash, deletion,
   organization changes, workflow changes, or OCR reprocessing.
+- Restricted dedicated trash and OCR requests to explicit document IDs, without an archive-wide
+  selector or OCR overrides.
 
 ## [0.9.0] - 2026-08-25
 

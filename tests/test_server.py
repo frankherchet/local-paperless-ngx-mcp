@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 from fastmcp import Client
@@ -38,6 +40,7 @@ async def test_server_exposes_expected_tools() -> None:
         "bulk_edit_objects",
         "set_document_metadata_field",
         "modify_document_tags",
+        "modify_document_custom_fields",
         "move_documents_to_trash",
         "reprocess_documents",
         "list_trashed_documents",
@@ -129,6 +132,110 @@ async def test_server_sends_structured_data_without_duplicate_json_text() -> Non
     assert isinstance(result.content[0], TextContent)
     assert result.content[0].text == "Structured Paperless result attached."
     assert "Invoice" not in result.content[0].text
+
+
+async def test_search_filters_by_custom_field_values() -> None:
+    filters = ["AND", [["due", "range", ["today", "in 30 days"]], [8, "exact", False]]]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("text") != "invoice":
+            return httpx.Response(200, json={"count": 0, "results": []})
+        if json.loads(request.url.params.get("custom_field_query", "null")) != filters:
+            return httpx.Response(
+                200,
+                json={"count": 2, "results": [{"id": 7}, {"id": 8}]},
+            )
+        return httpx.Response(200, json={"count": 1, "results": [{"id": 7}]})
+
+    settings = Settings(
+        PAPERLESS_URL="http://paperless.test",
+        PAPERLESS_TOKEN="test-token",
+    )
+    async with (
+        PaperlessClient(settings, transport=httpx.MockTransport(handler)) as paperless,
+        Client(create_server(paperless)) as client,
+    ):
+        result = await client.call_tool(
+            "search_documents",
+            {"query": "invoice", "custom_field_query": filters},
+        )
+
+    assert result.structured_content is not None
+    assert result.structured_content["results"] == [{"id": 7}]
+
+
+async def test_modify_document_custom_fields_queues_value_updates_and_removals() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/api/documents/bulk_edit/"
+        assert json.loads(request.content) == {
+            "documents": [42, 43],
+            "method": "modify_custom_fields",
+            "parameters": {
+                "add_custom_fields": {"4": False, "5": None, "6": "2026-12-01"},
+                "remove_custom_fields": [9],
+            },
+        }
+        return httpx.Response(200, json={"result": "OK", "task_id": "queued-fields"})
+
+    settings = Settings(
+        PAPERLESS_URL="http://paperless.test",
+        PAPERLESS_TOKEN="test-token",
+        PAPERLESS_READ_ONLY=False,
+    )
+    async with (
+        PaperlessClient(settings, transport=httpx.MockTransport(handler)) as paperless,
+        Client(create_server(paperless)) as client,
+    ):
+        result = await client.call_tool(
+            "modify_document_custom_fields",
+            {
+                "document_ids": [42, 43],
+                "set_values": {"4": False, "5": None, "6": "2026-12-01"},
+                "remove_field_ids": [9],
+            },
+        )
+
+    assert result.structured_content == {"result": "OK", "task_id": "queued-fields"}
+
+
+@pytest.mark.parametrize(
+    ("read_only", "remove_field_ids", "message"),
+    [
+        (True, [], "PAPERLESS_READ_ONLY=false"),
+        (False, [4], "cannot be set and removed together"),
+    ],
+)
+async def test_custom_field_write_rejects_unsafe_changes_before_network(
+    read_only: bool, remove_field_ids: list[int], message: str
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        pytest.fail("Rejected custom field writes must not reach Paperless")
+
+    settings = Settings.model_validate(
+        {
+            "PAPERLESS_URL": "http://paperless.test",
+            "PAPERLESS_TOKEN": "test-token",
+            "PAPERLESS_READ_ONLY": read_only,
+        }
+    )
+    async with (
+        PaperlessClient(settings, transport=httpx.MockTransport(handler)) as paperless,
+        Client(create_server(paperless)) as client,
+    ):
+        result = await client.call_tool(
+            "modify_document_custom_fields",
+            {
+                "document_ids": [42],
+                "set_values": {"4": False},
+                "remove_field_ids": remove_field_ids,
+            },
+            raise_on_error=False,
+        )
+
+    assert result.is_error
+    assert isinstance(result.content[0], TextContent)
+    assert message in result.content[0].text
 
 
 async def test_response_middleware_preserves_tool_errors() -> None:

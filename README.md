@@ -9,6 +9,7 @@ MCP-capable clients to your own Paperless-ngx instance over `stdio`.
 - Check connectivity, Paperless version, and API version.
 - Search documents by simple query, title, Paperless advanced syntax, or
   similarity.
+- Filter documents by custom field values, with or without a text query.
 - Retrieve document metadata, OCR text, and optional file checksums.
 - List tags, correspondents, document types, storage paths, custom fields,
   mail rules, saved views, and workflows with compact pagination.
@@ -18,6 +19,7 @@ MCP-capable clients to your own Paperless-ngx instance over `stdio`.
 - Create, rename, and configure organization objects.
 - Assign correspondents, document types, and storage paths in batches.
 - Add or remove tags without replacing unrelated tags.
+- Set or remove selected custom field values in batches.
 - Update selected document metadata and create document notes.
 - Configure and verify a default intake workflow for new documents.
 
@@ -162,7 +164,7 @@ explicitly.
 | Tool | Purpose | Writes to Paperless |
 | --- | --- | --- |
 | `paperless_status` | Check connectivity, versions, and document count | No |
-| `search_documents` | Find documents in four modes, or list recent documents with an empty simple query | No |
+| `search_documents` | Find documents in four modes, optionally filtered by custom field values | No |
 | `get_document` | Retrieve document metadata, OCR text, and optional file checksums | No |
 | `get_document_history` | Retrieve compact, paginated audit history; full changes are opt-in | No |
 | `get_document_suggestions` | Read classifier and optional AI suggestions | No |
@@ -184,6 +186,7 @@ explicitly.
 | `bulk_edit_objects` | Use `/api/bulk_edit_objects/` with a preview and safety checks | Optional |
 | `set_document_metadata_field` | Set or clear a correspondent, type, or storage path | Yes |
 | `modify_document_tags` | Add or remove tags | Yes |
+| `modify_document_custom_fields` | Set or remove selected custom field values on multiple documents | Yes |
 | `list_trashed_documents` | List recoverable trash contents | No |
 | `move_documents_to_trash` | Move documents to recoverable trash | Yes |
 | `restore_documents_from_trash` | Restore documents from trash | Yes |
@@ -213,6 +216,21 @@ Even when writes are enabled, the MCP cannot permanently delete documents:
 
 Workflow objects can be deleted only through `delete_workflow`, which defaults
 to `dry_run=true`. This never affects existing documents or trash.
+
+### Custom fields
+
+Pass a [Paperless filter array](https://github.com/paperless-ngx/paperless-ngx/blob/v3.5.1/docs/api.md#filtering-by-custom-fields)
+as `search_documents.custom_field_query`, for example `["paid", "exact", false]`.
+Paperless-ngx 3.4+ also supports relative dates, such as
+`["due", "range", ["today", "in 30 days"]]`.
+
+Use `list_metadata(object_type="custom_fields")` to find field IDs. For example,
+`modify_document_custom_fields(document_ids=[42, 43], set_values={"7": false}, remove_field_ids=[9])`
+sets field 7 and removes field 9 on both documents. Use `null` to assign an
+empty value instead of removing the field. Unlisted fields on the selected
+documents are unchanged. On Paperless-ngx 3.5.1, replacing or clearing a
+document-link value can leave stale reciprocal links. Remove the field first,
+confirm that job with `get_task`, then assign new links if needed.
 
 ### Default intake for new documents
 

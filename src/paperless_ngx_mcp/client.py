@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -203,6 +204,7 @@ class PaperlessClient:
         page_size: int,
         ordering: str,
         similar_to_id: int | None,
+        custom_field_query: list[Any] | None = None,
     ) -> JsonObject:
         params: dict[str, QueryValue] = {
             "page": page,
@@ -210,6 +212,8 @@ class PaperlessClient:
             "ordering": ordering,
             "truncate_content": True,
         }
+        if custom_field_query is not None:
+            params["custom_field_query"] = json.dumps(custom_field_query, separators=(",", ":"))
         if mode == "similar":
             if similar_to_id is None:
                 raise ValueError("similar_to_id is required when mode='similar'")
@@ -750,6 +754,22 @@ class PaperlessClient:
             {
                 "add_tags": add_tag_ids,
                 "remove_tags": remove_tag_ids,
+            },
+        )
+
+    async def modify_document_custom_fields(
+        self,
+        document_ids: list[int],
+        *,
+        set_values: JsonObject,
+        remove_field_ids: list[int],
+    ) -> JsonObject:
+        return await self._bulk_edit_documents(
+            document_ids,
+            "modify_custom_fields",
+            {
+                "add_custom_fields": set_values,
+                "remove_custom_fields": remove_field_ids,
             },
         )
 

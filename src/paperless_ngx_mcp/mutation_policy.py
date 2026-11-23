@@ -43,6 +43,7 @@ SAFE_BULK_DOCUMENT_METHODS = frozenset(
         "set_document_type",
         "set_storage_path",
         "modify_tags",
+        "modify_custom_fields",
     }
 )
 
@@ -108,6 +109,17 @@ def enforce_transport_mutation_policy(
 
     if (
         normalized_method == "POST"
+        and normalized_path in {"api/documents/delete/", "api/documents/reprocess/"}
+        and (
+            payload is None
+            or payload.keys() != {"documents"}
+            or not _are_positive_ids(payload["documents"])
+        )
+    ):
+        raise PermanentDeletionDisabled("Document actions require explicit document IDs only.")
+
+    if (
+        normalized_method == "POST"
         and normalized_path == "api/documents/bulk_edit/"
         and _payload_value(payload, "method") not in SAFE_BULK_DOCUMENT_METHODS
     ):
@@ -161,7 +173,7 @@ def ensure_reference_review_before_deletion(
 
 
 def ensure_safe_document_bulk_method(method: str) -> None:
-    """Only allow reversible document bulk edits, including move-to-trash."""
+    """Only allow the supported document bulk metadata methods."""
     if method not in SAFE_BULK_DOCUMENT_METHODS:
         raise PermanentDeletionDisabled(f"Bulk document method is not allowed: {method}")
 

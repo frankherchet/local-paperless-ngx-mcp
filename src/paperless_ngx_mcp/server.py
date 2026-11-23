@@ -77,12 +77,16 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
         page_size: int = 20,
         ordering: str = "-created",
         similar_to_id: int | None = None,
+        custom_field_query: list[Any] | None = None,
     ) -> JsonObject:
         """Search documents.
 
         Modes: simple searches title and OCR content, title searches only titles,
         advanced accepts Paperless search syntax, and similar finds documents related
         to similar_to_id.
+        custom_field_query accepts a Paperless filter array, e.g.
+        ["due", "range", ["today", "in 30 days"]] on Paperless 3.4+, or nested
+        ["AND", [filter1, filter2]]. Filters can be used without a text query.
         """
         _validate_page(page, page_size)
         if mode in {"title", "advanced"} and not query.strip():
@@ -96,6 +100,7 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
                 page_size=page_size,
                 ordering=ordering,
                 similar_to_id=similar_to_id,
+                custom_field_query=custom_field_query,
             )
 
     @server.tool(annotations=READ_ONLY, tags={"paperless", "documents"})
@@ -551,6 +556,38 @@ def create_server(client: PaperlessClient | None = None) -> FastMCP:
                 document_ids,
                 add_tag_ids=add_ids,
                 remove_tag_ids=remove_ids,
+            )
+
+    @server.tool(annotations=DESTRUCTIVE_WRITE, tags={"paperless", "documents", "write"})
+    async def modify_document_custom_fields(
+        document_ids: list[int],
+        set_values: dict[str, Any] | None = None,
+        remove_field_ids: list[int] | None = None,
+    ) -> JsonObject:
+        """Set or remove selected custom field values on multiple documents.
+
+        set_values maps field IDs (JSON string keys) to Paperless values. Null
+        assigns an empty value; remove_field_ids removes the field assignment.
+        Unlisted fields are unchanged. On Paperless 3.5.1, replacing or clearing a
+        document-link value can leave old reciprocal links; remove the field and
+        confirm that job before assigning new links. Check any returned task_id
+        with get_task before reporting success.
+        """
+        _validate_document_ids(document_ids)
+        values = set_values or {}
+        remove_ids = remove_field_ids or []
+        if not values and not remove_ids:
+            raise ValueError("Provide set_values or remove_field_ids")
+        if any(not key.isascii() or not key.isdecimal() or key.startswith("0") for key in values):
+            raise ValueError("set_values keys must be positive field IDs without leading zeros")
+        _validate_positive_ids(remove_ids, "remove_field_ids")
+        if any(str(field_id) in values for field_id in remove_ids):
+            raise ValueError("A custom field cannot be set and removed together")
+        async with use_client() as paperless:
+            return await paperless.modify_document_custom_fields(
+                document_ids,
+                set_values=values,
+                remove_field_ids=remove_ids,
             )
 
     @server.tool(annotations=TRASH, tags={"paperless", "trash", "documents", "write"})
